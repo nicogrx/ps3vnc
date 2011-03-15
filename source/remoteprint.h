@@ -1,4 +1,4 @@
-extern int remotePrintConnect(int * sockfd);
-extern void remotePrintClose(int sockfd);
-extern void remotePrint(int sockfd, const char * fmt, ...);
+extern int remotePrintConnect(void);
+extern void remotePrintClose(void);
+extern void remotePrint(const char * fmt, ...);
 

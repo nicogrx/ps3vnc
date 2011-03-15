@@ -13,7 +13,9 @@
 #define IP		"192.168.1.86"
 #define PORT	4000
 
-int remotePrintConnect(int * sockfd)
+int rp_sock;
+
+int remotePrintConnect(void)
 {
 	int ret;
 	struct sockaddr_in server;
@@ -21,9 +23,9 @@ int remotePrintConnect(int * sockfd)
 	if (ret < 0)
 		goto end;
 
-	*sockfd = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
-	if (*sockfd < 0) {
-		ret = *sockfd;
+	rp_sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
+	if (rp_sock < 0) {
+		ret = -1;
 		goto end;
 	}
 	memset(&server, 0, sizeof(server));
@@ -31,28 +33,26 @@ int remotePrintConnect(int * sockfd)
 	server.sin_family = AF_INET;
 	inet_pton(AF_INET, IP, &server.sin_addr);
 	server.sin_port = htons(PORT);
-
-	ret = connect(*sockfd, (struct sockaddr*)&server, sizeof(server));
+	ret = connect(rp_sock, (struct sockaddr*)&server, sizeof(server));
 end:
 	return ret;
 }
 
-void remotePrintClose(int sockfd)
+void remotePrintClose(void)
 {
-	shutdown(sockfd, SHUT_RDWR);
-	close(sockfd);
+	shutdown(rp_sock, SHUT_RDWR);
+	close(rp_sock);
 	netDeinitialize();
 }
 
-void remotePrint(int sockfd, const char * fmt, ...)
+void remotePrint(const char * fmt, ...)
 {
 	va_list ap;
 	char buffer[128];
 	memset(buffer, 0, sizeof(buffer));
-
 	va_start(ap, fmt);
 	vsnprintf(buffer, sizeof(buffer)-1, fmt, ap);
 	va_end(ap);
-	write(sockfd, buffer, strlen(buffer));
+	write(rp_sock, buffer, strlen(buffer));
 }
 

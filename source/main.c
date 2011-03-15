@@ -3,14 +3,13 @@
 
 int main(int argc, const char* argv[])
 {
-	int s;
 	int ret;
-	ret = remotePrintConnect(&s);
+	ret = remotePrintConnect();
 	if (ret < 0)
 		goto end;
 	
-	remotePrint(s, "\n\nHello World! i am %s\n\n", "nicogrx");
-	remotePrintClose(s);
+	remotePrint("\n\nHello World! i am %s\n\n", "nicogrx");
+	remotePrintClose();
 
 end:
 	return ret;

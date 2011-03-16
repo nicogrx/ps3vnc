@@ -10,14 +10,14 @@ BUILD			:= build
 SOURCE		:= source
 INCLUDE		:= include
 DATA			:= data
-LIBS			:= -lnet -lsysmodule
+LIBS			:= -lnet -lsysmodule -lgcm_sys -lreality -lsysutil -lio
 
 TITLE			:= VNC Viewer
 APPID			:= VNC0VIEWER1
 CONTENTID	:= UP0001-$(APPID)_00-0000000000000000
 PKGFILES	:= release
 ICON0			:= $(SOURCE)/ICON0.PNG 
-CFLAGS		+= -O2 -Wall -std=gnu99
+CFLAGS		+= -O2 -Wall -std=gnu99 -DVERBOSE
 CXXFLAGS	+= -O2 -Wall
 
 ifneq ($(BUILD),$(notdir $(CURDIR)))

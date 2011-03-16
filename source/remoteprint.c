@@ -19,9 +19,6 @@ int remotePrintConnect(void)
 {
 	int ret;
 	struct sockaddr_in server;
-	ret = netInitialize();
-	if (ret < 0)
-		goto end;
 
 	rp_sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
 	if (rp_sock < 0) {
@@ -42,7 +39,6 @@ void remotePrintClose(void)
 {
 	shutdown(rp_sock, SHUT_RDWR);
 	close(rp_sock);
-	netDeinitialize();
 }
 
 void remotePrint(const char * fmt, ...)

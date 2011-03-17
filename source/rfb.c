@@ -10,10 +10,9 @@
 #include "rfb.h"
 #include "remoteprint.h"
 
-#define DEFAULT_PORT 5901
 int rfb_sock;
 
-int rfbConnect(char * ip, int port)
+int rfbConnect(const char * ip, int port)
 {
 	int ret;
 	struct sockaddr_in server;
@@ -27,11 +26,6 @@ int rfbConnect(char * ip, int port)
 	server.sin_len = sizeof(server);
 	server.sin_family = AF_INET;
 	inet_pton(AF_INET, ip, &server.sin_addr);
-
-	if (port == -1)
-	{
-		port = DEFAULT_PORT;
-	}
 	server.sin_port = htons(port);
 	ret = connect(rfb_sock, (struct sockaddr*)&server, sizeof(server));
 end:
@@ -215,6 +209,28 @@ int rfbGetSecurityResult(void)
 	}
 	ret = (int)result;
 end:
+	return ret;
+}
+
+int rfbGetSecurityChallenge(unsigned char * challenge) 
+{
+	int ret;
+	ret = read(rfb_sock, challenge , 16);
+	if (ret != 16)
+	{
+		ret = -1;
+	}
+	return ret;
+}
+
+int rfbSendSecurityChallenge(unsigned char * challenge) 
+{
+	int ret;
+	ret = write(rfb_sock, challenge , 16);
+	if (ret != 16)
+	{
+		ret = -1;
+	}
 	return ret;
 }
 

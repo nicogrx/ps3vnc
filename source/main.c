@@ -4,8 +4,12 @@
 #include "remoteprint.h"
 #include "screen.h"
 #include "rfb.h"
+#include "vncauth.h"
 
-int start(void);
+int handshake(char * password);
+int authenticate(char * password);
+
+RFB_INFO rfb_info;
 
 int main(int argc, const char* argv[])
 {
@@ -14,7 +18,9 @@ int main(int argc, const char* argv[])
 #if 1
 	u32 * test_rectangle;
 #endif
-	int i, ret=0;
+	int i, port, ret=0;
+	const char ip[] = "192.168.1.86";
+	char password[] = "nicogrx";
 
 	ret = netInitialize();
 	if (ret < 0)
@@ -22,7 +28,7 @@ int main(int argc, const char* argv[])
 
 #ifdef VERBOSE
 	ret = remotePrintConnect();
-	if (ret < 0)
+	if (ret<0)
 		goto end;
 #endif
 	RPRINT("PS3 Vnc viewer started!\n");
@@ -40,7 +46,25 @@ int main(int argc, const char* argv[])
 	updateScreen();
 #endif
 
-	ret = start();
+	for(port=5900;port<5930;port++)
+	{
+		ret = rfbConnect(ip,port);
+		if (ret>=0)
+		{
+			RPRINT("connected to serveur %s:%i\n", ip, port);
+			break;
+		}
+	}
+	if (ret<0)
+	{
+		RPRINT("failed to connect to server %s\n", ip);
+		goto clean_rp;
+	}
+
+	ret = handshake(password);
+	if (ret<0)
+		goto clean;
+	RPRINT("handshake OK\n");
 
 	while(1)
 	{
@@ -57,7 +81,10 @@ int main(int argc, const char* argv[])
 			}		
 		}
 	}
+
 clean:
+	rfbClose();
+clean_rp:
 #ifdef VERBOSE
 	remotePrintClose();
 #endif
@@ -66,52 +93,77 @@ end:
 	return ret;
 }
 
-int start(void)
+int handshake(char * password)
 {
-	int ret, version, security_type;
+	int ret;
 	char * reason=NULL;
-	
-	ret = rfbConnect("192.168.1.86", -1);
-	if (ret<0)
-	{
-		RPRINT("failed to connect to vncserver\n");
-		goto end;
-	}
-	
+
 	ret = rfbGetProtocolVersion();
 	if (ret<0)
 	{
 		RPRINT("failed to get protocol version\n");
-		goto close;
+		goto end;
 	}
-	version = ret;
+	rfb_info.version = ret;
 	ret = rfbSendProtocolVersion(RFB_003_003);
 	if (ret<0)
 	{
 		RPRINT("failed to send protocol version\n");
-		goto close;
+		goto end;
 	}
 	ret = rfbGetSecurityType();
 	if (ret<0)
 	{
 		RPRINT("failed to get security type\n");
-		goto close;
+		goto end;
 	}
-	security_type=ret;
-	RPRINT("security type:%i\n", security_type);
-	if (security_type==0)
+	rfb_info.security_type=ret;
+	RPRINT("security type:%i\n", rfb_info.security_type);
+	switch(rfb_info.security_type)
 	{
-		ret = rfbGetString(reason);
-		if (ret>0)
-		{
-			RPRINT("%s_n",reason);
-			free(reason);
-			goto close;
-		}
+		case RFB_SEC_TYPE_VNC_AUTH:
+			// authentication is needed
+			ret = authenticate(password);
+			if (ret!=RFB_SEC_RESULT_OK)
+			{
+				RPRINT("failed to authenticate, security result:%i\n", ret);
+				ret = -1;
+			}
+			break;
+		case RFB_SEC_TYPE_NONE:
+			//switch to init phase
+			ret=0;
+			RPRINT("no authentication needed\n");
+			break;	
+		case RFB_SEC_TYPE_INVALID: 
+			ret = rfbGetString(reason);
+			if (ret>0)
+			{
+				RPRINT("%s_n",reason);
+				free(reason);
+			}
+			ret = -1;
+			break;
+		default:
+			RPRINT("security type is not supported\n");
 	}
 
-close:
-	rfbClose();
+end:
+	return ret;
+}
+
+int authenticate(char * password)
+{
+	int ret;
+	unsigned char challenge[16];
+	ret = rfbGetSecurityChallenge(challenge);
+	if (ret<0)
+		goto end;
+	vncEncryptBytes(challenge, password);
+	ret = rfbSendSecurityChallenge(challenge); 
+	if (ret<0)
+		goto end;
+	ret = rfbGetSecurityResult();
 end:
 	return ret;
 }

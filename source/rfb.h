@@ -27,7 +27,13 @@ enum SecurityResult
 	RFB_SEC_RESULT_FAILED=1
 };
 
-extern int rfbConnect(char * server_addr, int port);
+typedef struct 
+{
+	int version;
+	int security_type;
+} RFB_INFO;
+
+extern int rfbConnect(const char * server_addr, int port);
 extern void rfbClose(void);
 extern int rfbGetString(char * string);
 extern int rfbGetProtocolVersion(void);
@@ -36,3 +42,5 @@ extern int rfbGetSecurityTypes(unsigned char * types); // version 3.7 onwards
 extern int rfbSendSecurityType(unsigned char type); // version 3.7 onwards
 extern int rfbGetSecurityType(void); // version 3.3
 extern int rfbGetSecurityResult(void);
+extern int rfbGetSecurityChallenge(unsigned char * challenge);
+extern int rfbSendSecurityChallenge(unsigned char * challenge);

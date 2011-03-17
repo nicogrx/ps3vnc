@@ -234,4 +234,21 @@ int rfbSendSecurityChallenge(unsigned char * challenge)
 	return ret;
 }
 
+int rfbSendClientInit(unsigned char flag) 
+{
+	int ret;
+	if (flag != RFB_NOT_SHARED && flag!=RFB_SHARED)
+		return -1;
+	ret = rfbSendByte(flag);
+	return ret;
+}
+
+int rfbGetServerInitMsg(RFB_SERVER_INIT_MSG * server_init_msg)
+{
+	int ret;
+	ret = read(rfb_sock, (void*)server_init_msg, sizeof(RFB_SERVER_INIT_MSG));
+	if (ret!=sizeof(RFB_SERVER_INIT_MSG))
+		ret=-1;
+	return ret;
+}
 

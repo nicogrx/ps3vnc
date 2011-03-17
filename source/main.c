@@ -1,4 +1,3 @@
-//#include <stdio.h>
 #include <psl1ght/lv2/net.h>
 #include <io/pad.h>
 #include "remoteprint.h"
@@ -8,6 +7,7 @@
 
 int handshake(char * password);
 int authenticate(char * password);
+int init(void);
 
 RFB_INFO rfb_info;
 
@@ -31,7 +31,7 @@ int main(int argc, const char* argv[])
 	if (ret<0)
 		goto end;
 #endif
-	RPRINT("PS3 Vnc viewer started!\n");
+	RPRINT("start PS3 Vnc viewer\n");
 	
 	ioPadInit(7);
 	initScreen();
@@ -65,6 +65,15 @@ int main(int argc, const char* argv[])
 	if (ret<0)
 		goto clean;
 	RPRINT("handshake OK\n");
+	
+	ret = init();
+	if (ret<0)
+		goto clean;
+
+	//RPRINT("Init OK\n");
+
+	if (rfb_info.server_name_string!=NULL)
+		free(rfb_info.server_name_string);
 
 	while(1)
 	{
@@ -75,7 +84,7 @@ int main(int argc, const char* argv[])
 			{
 				ioPadGetData(i, &paddata);
 				if(paddata.BTN_CROSS) {
-					RPRINT("PS3 Vnc viewer end\n");
+					RPRINT("end PS3 Vnc viewer\n");
 					goto clean;
 				}
 			}		
@@ -168,3 +177,47 @@ end:
 	return ret;
 }
 
+int init(void)
+{
+	int ret;
+	ret = rfbSendClientInit(RFB_NOT_SHARED);
+	if (ret<0)
+	{
+		RPRINT("failed to send client init msg\n");
+		goto end;
+	}
+	ret =rfbGetServerInitMsg(&(rfb_info.server_init_msg));
+	if (ret<0)
+	{
+		RPRINT("failed to get server init msg\n");
+		goto end;
+	}
+	RPRINT("framebuffer_width:%i\nframebuffer_height:%i\n",
+		rfb_info.server_init_msg.framebuffer_width,
+		rfb_info.server_init_msg.framebuffer_height);
+	RPRINT("\nPIXEL FORMAT:\n\n");
+	RPRINT("bits_per_pixel:%i\ndepth:%i\nbig_endian_flag:%i\ntrue_colour_flag:%i\n",
+		rfb_info.server_init_msg.pixel_format.bits_per_pixel,
+		rfb_info.server_init_msg.pixel_format.depth,
+		rfb_info.server_init_msg.pixel_format.big_endian_flag,
+		rfb_info.server_init_msg.pixel_format.true_colour_flag);
+	RPRINT("red_max:%i\ngreen_max:%i\nblue_max:%i\n",
+		rfb_info.server_init_msg.pixel_format.red_max,
+		rfb_info.server_init_msg.pixel_format.green_max,
+		rfb_info.server_init_msg.pixel_format.blue_max);
+	RPRINT("red_shift:%i\ngreen_shift:%i\nblue_shift:%i\n",
+		rfb_info.server_init_msg.pixel_format.red_shift,
+		rfb_info.server_init_msg.pixel_format.green_shift,
+		rfb_info.server_init_msg.pixel_format.blue_shift);
+
+	ret = rfbGetString(rfb_info.server_name_string);
+	if (ret<0)
+	{
+		RPRINT("failed to get server name string\n");
+		goto end;
+	}
+	RPRINT("server name:%s\n",rfb_info.server_name_string);
+	
+end:
+	return ret;
+}

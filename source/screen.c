@@ -105,3 +105,8 @@ void updateScreen(void)
 	current_frame_buffer = !current_frame_buffer;
 	waitFlip(); // Wait for the last flip to finish, so we can draw to the old buffer
 }
+
+unsigned int * getCurrentFrameBuffer(void)
+{
+	return frame_buffers[current_frame_buffer];
+}

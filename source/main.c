@@ -13,6 +13,7 @@ int authenticate(char * password);
 int init(void);
 int view(void);
 int handlePadEvents(void);
+int handleRectangle(void);
 
 RFB_INFO rfb_info;
 unsigned char input_msg[32];
@@ -275,13 +276,50 @@ int view(void)
 			break;
 
 		// request framebuffer update	
-
+		RFB_FRAMEBUFFER_UPDATE_REQUEST * rfbur = (RFB_FRAMEBUFFER_UPDATE_REQUEST *)output_msg;
+		rfbur->incremental = 1;
+		rfbur->x_position = 0;
+		rfbur->y_position = 0;
+		rfbur->width = res.width;
+		rfbur->height = res.height;
+		ret = rfbSendMsg(RFB_FramebufferUpdateRequest, rfbur);
+		if (ret<0)
+			break;
 
 		//handle server msgs
+		ret = rfbGetMsg(input_msg);
+		if (ret<0)
+			break;
+		
+		switch (input_msg[0])
+		{
+			case RFB_FramebufferUpdate:
+				{
+					RFB_FRAMEBUFFER_UPDATE * rfbu = (RFB_FRAMEBUFFER_UPDATE *)input_msg;
+					for (i=0;i<rfbu->number_of_rectangles;i++)
+					{
+						ret = handleRectangle();
+						if (ret<0)
+							goto end;
+					}
+					//render screen
+					updateScreen();
+				}		
+				break;
+			case RFB_Bell:
+				break;
+			case RFB_ServerCutText:
+			case RFB_SetColourMapEntries:
+			default:
+				RPRINT("cannot handle msg type:%d\n", input_msg[0]);
+				ret=-1;
+				goto end;
+		}
 
 		
 	} // end main loop
 
+end:
 	return ret;
 }
 
@@ -391,6 +429,70 @@ int handlePadEvents(void)
 			
 			break;
 		}
+	}
+
+end:
+	return ret;
+}
+
+int	handleRectangle(void)
+{
+	int ret=0;
+	unsigned int * pixel_data = NULL;
+	RFB_FRAMEBUFFER_UPDATE_RECTANGLE rfbur;
+		
+	ret = rfbGetRectangleInfo(&rfbur);
+	if (ret<0)
+		goto end;
+
+	RPRINT("update rectangle\nx_position:%d\ny_position:%d\nwidth:%d\nheight:%d\nencoding_type:%d\n",
+		rfbur.x_position,
+		rfbur.x_position,
+		rfbur.width,
+		rfbur.height,
+		rfbur.encoding_type);
+
+	switch (rfbur.encoding_type)
+	{
+		case RFB_Raw:
+			pixel_data = (unsigned int *)malloc(rfbur.width*rfbur.height*
+				rfb_info.server_init_msg.pixel_format.bits_per_pixel);
+			if (pixel_data == NULL)
+			{
+				RPRINT("unable to allocate pixel_data\n");
+				ret=-1;
+				goto end;
+			}
+			// FIXME big_endian_flag must be handled !!!
+			drawRectangleToScreen((const unsigned int*)pixel_data,
+			(unsigned int)rfbur.width,
+			(unsigned int)rfbur.height,
+			(unsigned int)rfbur.x_position,
+			(unsigned int)rfbur.y_position);
+			free(pixel_data);
+			break;
+		case RFB_CopyRect:
+			{
+				RFB_COPYRECT_INFO rci;
+				ret = rfbGetBytes((unsigned char *)&rci, sizeof(RFB_COPYRECT_INFO));
+				if (ret<0)
+				{
+					RPRINT("failed to get RFB_COPYRECT_INFO\n");
+					goto end;
+				}
+				pixel_data = getCurrentFrameBuffer()+rci.src_y_position*res.width
+					+rci.src_x_position;
+				drawRectangleToScreen((const unsigned int*)pixel_data,
+				(unsigned int)rfbur.width,
+				(unsigned int)rfbur.height,
+				(unsigned int)rfbur.x_position,
+				(unsigned int)rfbur.y_position);
+			}
+			break;
+		default:
+			RPRINT("unsupported encoding type:%d\n", rfbur.encoding_type);
+			ret = -1;
+			goto end;
 	}
 
 end:

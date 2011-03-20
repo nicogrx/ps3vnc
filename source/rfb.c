@@ -364,3 +364,12 @@ int rfbGetMsg(void * data)
 end:
 	return ret;
 }
+
+int rfbGetRectangleInfo(void * data)
+{
+	int ret;
+	RFB_FRAMEBUFFER_UPDATE_RECTANGLE * rfbur;
+	rfbur = (RFB_FRAMEBUFFER_UPDATE_RECTANGLE *)data;
+	ret = rfbGetBytes(((unsigned char *)rfbur), sizeof(RFB_FRAMEBUFFER_UPDATE_RECTANGLE));
+	return ret;
+}

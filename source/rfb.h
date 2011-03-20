@@ -92,7 +92,6 @@ typedef struct
 	int security_type;
 	RFB_SERVER_INIT_MSG server_init_msg;
 	char * server_name_string;
-	PIXEL_FORMAT pixel_format;
 } RFB_INFO;
 
 // Client messages
@@ -167,6 +166,12 @@ typedef struct
 
 typedef struct
 {	
+	unsigned short src_x_position;
+	unsigned short src_y_position;
+} RFB_COPYRECT_INFO;
+
+typedef struct
+{	
 	unsigned char msg_type;
 	unsigned char padding;
 	unsigned short first_colour;
@@ -190,8 +195,9 @@ typedef struct
 } RFB_SERVER_CUT_TEXT;
 
 // prototypes
-extern int rfbConnect(const char * server_addr, int port);
 extern void rfbClose(void);
+extern int rfbConnect(const char * server_addr, int port);
+extern int rfbGetBytes(unsigned char * bytes, int size);
 extern int rfbGetString(char * string);
 extern int rfbGetProtocolVersion(void);
 extern int rfbGetSecurityTypes(unsigned char * types); // version 3.7 onwards
@@ -200,6 +206,7 @@ extern int rfbGetSecurityResult(void);
 extern int rfbGetSecurityChallenge(unsigned char * challenge);
 extern int rfbGetServerInitMsg(RFB_SERVER_INIT_MSG * server_init_msg);
 extern int rfbGetMsg(void * data);
+extern int rfbGetRectangleInfo(void * data);
 
 extern int rfbSendProtocolVersion(int version);
 extern int rfbSendSecurityType(unsigned char type); // version 3.7 onwards

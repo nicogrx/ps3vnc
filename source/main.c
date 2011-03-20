@@ -58,6 +58,7 @@ int main(int argc, const char* argv[])
 		goto clean;
 	RPRINT("handshake OK\n");
 
+	initScreen();
 	ret = init();
 	if (ret<0)
 		goto clean;
@@ -251,27 +252,29 @@ int view(void)
 {
 	int i, ret;
 	ioPadInit(7);
-	initScreen();
 
 	while(1) // main loop
 	{
 		//handle joystick events
+		RPRINT("handle pad events\n");
 		ret = handlePadEvents();
 		if (ret<0)
 			break;
 
-		// request framebuffer update	
+		// request framebuffer update
+		RPRINT("request framebuffer update\n");
 		RFB_FRAMEBUFFER_UPDATE_REQUEST * rfbur = (RFB_FRAMEBUFFER_UPDATE_REQUEST *)output_msg;
 		rfbur->incremental = 1;
 		rfbur->x_position = 0;
 		rfbur->y_position = 0;
-		rfbur->width = res.width;
-		rfbur->height = res.height;
+		rfbur->width = rfb_info.server_init_msg.framebuffer_width;
+		rfbur->height = rfb_info.server_init_msg.framebuffer_height;
 		ret = rfbSendMsg(RFB_FramebufferUpdateRequest, rfbur);
 		if (ret<0)
 			break;
 
 		//handle server msgs
+		RPRINT("get server message\n");
 		ret = rfbGetMsg(input_msg);
 		if (ret<0)
 			break;
@@ -288,6 +291,7 @@ int view(void)
 							goto end;
 					}
 					//render screen
+					RPRINT("render screen\n");
 					updateScreen();
 				}		
 				break;

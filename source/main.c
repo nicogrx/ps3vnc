@@ -253,23 +253,8 @@ int view(void)
 	ioPadInit(7);
 	initScreen();
 
-#if 1 // test screen rendering
-	{
-		u32 * test_rectangle;
-		test_rectangle = malloc(50*50*4);
-		for(i=0;i<(50*50);i++)
-		{
-			test_rectangle[i]=0x00FF0000; //RED
-		}
-		drawRectangleToScreen((const u32*)test_rectangle, 50, 50, 100, 100);
-		free(test_rectangle);
-		updateScreen();
-	}
-#endif
-
 	while(1) // main loop
 	{
-		
 		//handle joystick events
 		ret = handlePadEvents();
 		if (ret<0)

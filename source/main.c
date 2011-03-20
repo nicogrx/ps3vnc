@@ -1,5 +1,7 @@
 #include <psl1ght/lv2/net.h>
 #include <io/pad.h>
+#include <sysutil/video.h>
+
 #include "remoteprint.h"
 #include "screen.h"
 #include "rfb.h"
@@ -10,17 +12,19 @@ int authenticate(char * password);
 int init(void);
 
 RFB_INFO rfb_info;
+unsigned char input_msg[32];
+unsigned char output_msg[32];
 
 int main(int argc, const char* argv[])
 {
 	PadInfo padinfo;
 	PadData paddata;
-#if 1
-	u32 * test_rectangle;
-#endif
 	int i, port, ret=0;
 	const char ip[] = "192.168.1.86";
 	char password[] = "nicogrx";
+#if 1
+	u32 * test_rectangle;
+#endif
 
 	ret = netInitialize();
 	if (ret < 0)
@@ -65,12 +69,14 @@ int main(int argc, const char* argv[])
 	if (ret<0)
 		goto clean;
 	RPRINT("handshake OK\n");
-	
+
 	ret = init();
 	if (ret<0)
 		goto clean;
 
-	//RPRINT("Init OK\n");
+	RPRINT("Init OK\n");
+
+	
 
 	if (rfb_info.server_name_string!=NULL)
 		free(rfb_info.server_name_string);
@@ -217,7 +223,52 @@ int init(void)
 		goto end;
 	}
 	RPRINT("server name:%s\n",rfb_info.server_name_string);
+
+	// check width & height
+	if (rfb_info.server_init_msg.framebuffer_width>res.width ||
+			rfb_info.server_init_msg.framebuffer_height>res.height)
+	{
+		RPRINT("cannot handle frame size: with=%i, height=%i\n",
+			rfb_info.server_init_msg.framebuffer_width,
+			rfb_info.server_init_msg.framebuffer_height);
+		ret=-1;
+		goto end;
+	}
 	
+	// FIXME: in theory, every pixel format should be supported ...
+	// at least, all bpp&depth
+	// moreover, should be possible to send prefered PIXEL FORMAT to server
+	// instead of just existing...
+
+	// check bpp & depth
+	if (rfb_info.server_init_msg.pixel_format.bits_per_pixel!=32 ||
+			rfb_info.server_init_msg.pixel_format.depth!=24)
+	{
+		RPRINT("cannot handle bpp=%d, depth=%d\n",
+		rfb_info.server_init_msg.pixel_format.bits_per_pixel,
+		rfb_info.server_init_msg.pixel_format.depth);
+		ret=-1;
+		goto end;
+
+	}
+
+	// check colour mode
+	if (rfb_info.server_init_msg.pixel_format.true_colour_flag!=1)
+	{
+		RPRINT("cannot handle colour map\n");
+		ret=-1;
+		goto end;
+	}
+
+	// now send supported encodings formats
+	{
+		RFB_SET_ENCODINGS * rse = (RFB_SET_ENCODINGS *)input_msg;
+		rse->number_of_encodings = 2;
+		int encoding_type[2] = {RFB_Raw, RFB_CopyRect};	
+		rse->encoding_type = encoding_type;
+		ret = rfbSendMsg(RFB_SetEncodings, rse);
+	}
+
 end:
 	return ret;
 }

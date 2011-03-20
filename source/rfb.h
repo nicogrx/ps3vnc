@@ -110,7 +110,7 @@ typedef struct
 	unsigned char msg_type;
 	unsigned char padding;
 	unsigned short number_of_encodings;
-	unsigned int * encoding_type;
+	int * encoding_type;
 } RFB_SET_ENCODINGS;
 
 typedef struct

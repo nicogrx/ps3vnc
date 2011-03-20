@@ -50,7 +50,20 @@ int rfbGetBytes(unsigned char * bytes, int size)
 			bytes_to_read-=ret;
 		}
 	if (ret>=0)
+	{
 		ret = size;
+#ifdef VERBOSE
+		{
+			int i;
+			RPRINT("bytes received:\n");
+			for (i=0;i<size;i++)
+			{
+				RPRINT("%x,", bytes[i]);
+			}
+			RPRINT("\n");
+		}
+#endif
+	}
 	return ret;
 }
 
@@ -58,6 +71,19 @@ int rfbSendBytes(unsigned char * bytes, int size)
 {
 	int ret=0;
 	int bytes_to_write=size;
+
+#ifdef VERBOSE
+	{
+		int i;
+		RPRINT("bytes to send:\n");
+		for (i=0;i<size;i++)
+		{
+			RPRINT("%x,", bytes[i]);
+		}
+		RPRINT("\n");
+	}
+#endif
+
 	while (bytes_to_write)
 		{
 			ret = write(rfb_sock, bytes, bytes_to_write);
@@ -67,26 +93,6 @@ int rfbSendBytes(unsigned char * bytes, int size)
 		}
 	if (ret>=0)
 		ret = size;
-	return ret;
-}
-
-int rfbGetString(char * string)
-{
-	int ret;
-	unsigned int length;
-	ret = rfbGetBytes((unsigned char*)&length, 4);
-	if (ret<0)
-	{
-		goto end;
-	}
-	string = (char*) malloc((int)length+1);
-	memset(string, 0, (int)length+1);
-	ret = rfbGetBytes((unsigned char *)string, (int)length);
-	if (ret<0)
-	{
-		free(string);
-	}
-end:
 	return ret;
 }
 

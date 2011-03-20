@@ -84,6 +84,7 @@ typedef struct
 	unsigned short framebuffer_width;
 	unsigned short framebuffer_height;
 	PIXEL_FORMAT pixel_format;
+	unsigned int name_length;
 } RFB_SERVER_INIT_MSG;
 
 typedef struct 
@@ -198,7 +199,6 @@ typedef struct
 extern void rfbClose(void);
 extern int rfbConnect(const char * server_addr, int port);
 extern int rfbGetBytes(unsigned char * bytes, int size);
-extern int rfbGetString(char * string);
 extern int rfbGetProtocolVersion(void);
 extern int rfbGetSecurityTypes(unsigned char * types); // version 3.7 onwards
 extern int rfbGetSecurityType(void); // version 3.3

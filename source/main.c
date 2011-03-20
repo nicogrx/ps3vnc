@@ -123,10 +123,27 @@ int handshake(char * password)
 			RPRINT("no authentication needed\n");
 			break;	
 		case RFB_SEC_TYPE_INVALID: 
-			ret = rfbGetString(reason);
-			if (ret>0)
 			{
-				RPRINT("%s_n",reason);
+				int l;
+				ret = rfbGetBytes((unsigned char*)&l, 4);
+				if (ret<0)
+					goto end;
+
+				reason = (char*)malloc(l+1);
+				if (reason == NULL)
+				{
+					RPRINT("failed to allocate %d bytes\n", l);
+					ret = -1;
+					goto end;
+				}
+				ret = rfbGetBytes((unsigned char*)(reason), l);
+				if (ret<0)
+				{
+					free(reason);
+					goto end;
+				}
+				reason[l]='\0';
+				RPRINT("%s\n",reason);
 				free(reason);
 			}
 			ret = -1;
@@ -170,10 +187,33 @@ int init(void)
 		RPRINT("failed to get server init msg\n");
 		goto end;
 	}
+
+	if ( rfb_info.server_init_msg.name_length!=0)
+	{
+		int l = rfb_info.server_init_msg.name_length;
+		rfb_info.server_name_string = NULL;
+		rfb_info.server_name_string = (char*)malloc(l+1);
+		if (rfb_info.server_name_string == NULL)
+		{
+			RPRINT("failed to allocate %d bytes\n", l+1);
+			ret = -1;
+			goto end;
+		}
+		ret = rfbGetBytes((unsigned char*)(rfb_info.server_name_string), l);
+		if (ret<0)
+		{
+			free(rfb_info.server_name_string);
+			goto end;
+		}
+		rfb_info.server_name_string[l]='\0';
+		RPRINT("server name:%s\n",rfb_info.server_name_string);
+
+	}
+
 	RPRINT("framebuffer_width:%i\nframebuffer_height:%i\n",
 		rfb_info.server_init_msg.framebuffer_width,
 		rfb_info.server_init_msg.framebuffer_height);
-	RPRINT("\nPIXEL FORMAT:\n\n");
+	RPRINT("PIXEL FORMAT:\n");
 	RPRINT("bits_per_pixel:%i\ndepth:%i\nbig_endian_flag:%i\ntrue_colour_flag:%i\n",
 		rfb_info.server_init_msg.pixel_format.bits_per_pixel,
 		rfb_info.server_init_msg.pixel_format.depth,
@@ -188,13 +228,6 @@ int init(void)
 		rfb_info.server_init_msg.pixel_format.green_shift,
 		rfb_info.server_init_msg.pixel_format.blue_shift);
 
-	ret = rfbGetString(rfb_info.server_name_string);
-	if (ret<0)
-	{
-		RPRINT("failed to get server name string\n");
-		goto end;
-	}
-	RPRINT("server name:%s\n",rfb_info.server_name_string);
 
 	// check width & height
 	if (rfb_info.server_init_msg.framebuffer_width>res.width ||
@@ -274,7 +307,7 @@ int view(void)
 			break;
 
 		//handle server msgs
-		RPRINT("get server message\n");
+		RPRINT("waiting for server message\n");
 		ret = rfbGetMsg(input_msg);
 		if (ret<0)
 			break;

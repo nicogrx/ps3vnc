@@ -1,30 +1,30 @@
 #include <psl1ght/lv2/net.h>
 #include <io/pad.h>
 #include <sysutil/video.h>
-
 #include "remoteprint.h"
 #include "screen.h"
 #include "rfb.h"
 #include "vncauth.h"
+#include "keysymdef.h"
+#include "mouse.h"
 
 int handshake(char * password);
 int authenticate(char * password);
 int init(void);
+int view(void);
+int handlePadEvents(void);
 
 RFB_INFO rfb_info;
 unsigned char input_msg[32];
 unsigned char output_msg[32];
+PadInfo padinfo;
+PadData paddata;
 
 int main(int argc, const char* argv[])
 {
-	PadInfo padinfo;
-	PadData paddata;
-	int i, port, ret=0;
+	int port, ret=0;
 	const char ip[] = "192.168.1.86";
 	char password[] = "nicogrx";
-#if 1
-	u32 * test_rectangle;
-#endif
 
 	ret = netInitialize();
 	if (ret < 0)
@@ -37,19 +37,6 @@ int main(int argc, const char* argv[])
 #endif
 	RPRINT("start PS3 Vnc viewer\n");
 	
-	ioPadInit(7);
-	initScreen();
-#if 1
-	test_rectangle = malloc(50*50*4);
-	for(i=0;i<(50*50);i++)
-	{
-		test_rectangle[i]=0x00FF0000; //RED
-	}
-	drawRectangleToScreen((const u32*)test_rectangle, 50, 50, 100, 100);
-	free(test_rectangle);
-	updateScreen();
-#endif
-
 	for(port=5900;port<5930;port++)
 	{
 		ret = rfbConnect(ip,port);
@@ -73,29 +60,12 @@ int main(int argc, const char* argv[])
 	ret = init();
 	if (ret<0)
 		goto clean;
-
 	RPRINT("Init OK\n");
 
-	
+	ret = view(); // will loop	until exit condition is reached
 
 	if (rfb_info.server_name_string!=NULL)
 		free(rfb_info.server_name_string);
-
-	while(1)
-	{
-		ioPadGetInfo(&padinfo);
-		for(i=0; i<MAX_PADS; i++)
-		{
-			if(padinfo.status[i])
-			{
-				ioPadGetData(i, &paddata);
-				if(paddata.BTN_CROSS) {
-					RPRINT("end PS3 Vnc viewer\n");
-					goto clean;
-				}
-			}		
-		}
-	}
 
 clean:
 	rfbClose();
@@ -262,11 +232,165 @@ int init(void)
 
 	// now send supported encodings formats
 	{
-		RFB_SET_ENCODINGS * rse = (RFB_SET_ENCODINGS *)input_msg;
+		RFB_SET_ENCODINGS * rse = (RFB_SET_ENCODINGS *)output_msg;
 		rse->number_of_encodings = 2;
 		int encoding_type[2] = {RFB_Raw, RFB_CopyRect};	
 		rse->encoding_type = encoding_type;
 		ret = rfbSendMsg(RFB_SetEncodings, rse);
+	}
+
+end:
+	return ret;
+}
+
+// infinite loop
+// - request frame update
+// - handle incoming msgs and render screen 
+int view(void)
+{
+	int i, ret;
+	ioPadInit(7);
+	initScreen();
+
+#if 1 // test screen rendering
+	{
+		u32 * test_rectangle;
+		test_rectangle = malloc(50*50*4);
+		for(i=0;i<(50*50);i++)
+		{
+			test_rectangle[i]=0x00FF0000; //RED
+		}
+		drawRectangleToScreen((const u32*)test_rectangle, 50, 50, 100, 100);
+		free(test_rectangle);
+		updateScreen();
+	}
+#endif
+
+	while(1) // main loop
+	{
+		
+		//handle joystick events
+		ret = handlePadEvents();
+		if (ret<0)
+			break;
+
+		// request framebuffer update	
+
+
+		//handle server msgs
+
+		
+	} // end main loop
+
+	return ret;
+}
+
+
+int handlePadEvents(void)
+{
+	int i, ret=0, event=0;
+	static int buttons_state=0;
+	static int x=0;
+	static int y=0;
+
+	// first check joystick input events
+	ioPadGetInfo(&padinfo);
+	for(i=0; i<MAX_PADS; i++)
+	{
+		if(padinfo.status[i])
+		{
+			ioPadGetData(i, &paddata);
+			if(paddata.BTN_TRIANGLE)
+			{
+				RPRINT("exit on user request\n");
+				ret = -1;
+				goto end;
+			}
+
+			RFB_POINTER_EVENT * rpe = (RFB_POINTER_EVENT *)output_msg;
+			
+			if (paddata.BTN_SQUARE)
+			{
+				event = 1;
+				buttons_state |= M_LEFT;
+			}
+			else if (buttons_state & M_LEFT)
+			{
+				event = 1;
+				buttons_state &= ~M_LEFT;
+			}
+
+			if (paddata.BTN_CIRCLE)
+			{
+				event = 1;
+				buttons_state |= M_RIGHT;
+			}
+			else if (buttons_state & M_RIGHT)
+			{
+				event = 1;
+				buttons_state &= ~M_RIGHT;
+			}
+
+			if (paddata.BTN_L1)
+			{
+				event = 1;
+				buttons_state |= M_WHEEL_DOWN;
+			}
+			else if (buttons_state & M_WHEEL_DOWN)
+			{
+				event = 1;
+				buttons_state &= ~M_WHEEL_DOWN;
+			}
+
+			if (paddata.BTN_R1)
+			{
+				event = 1;
+				buttons_state |= M_WHEEL_UP;
+			}
+			else if (buttons_state & M_WHEEL_UP)
+			{
+				event = 1;
+				buttons_state &= ~M_WHEEL_UP;
+			}
+
+			if (paddata.BTN_LEFT)
+			{
+				event = 1;
+				if (x > 0)
+					x-=1;
+			}
+			
+			if (paddata.BTN_RIGHT)
+			{
+				event = 1;
+				if (x < res.width)
+					x+=1;
+			}
+			
+			if (paddata.BTN_UP)
+			{
+				event = 1;
+				if (y > 0)
+					y-=1;
+			}
+			
+			if (paddata.BTN_DOWN)
+			{
+				event = 1;
+				if (y < res.height)
+					y+=1;
+			}
+
+			if (event)
+			{
+				rpe->button_mask = buttons_state;
+				rpe->x_position = x;
+				rpe->y_position = y;
+				ret = rfbSendMsg(RFB_PointerEvent, rpe);
+			}
+			
+			break;
+		}
 	}
 
 end:

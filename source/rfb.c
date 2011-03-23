@@ -37,7 +37,7 @@ void rfbClose(void)
 	shutdown(rfb_sock, SHUT_RDWR);
 	close(rfb_sock);
 }
-#define MAX_BYTES_IN_ONE_READ 512
+#define MAX_BYTES_IN_ONE_READ_WRITE 512
 int rfbGetBytes(unsigned char * bytes, int size)
 {
 	int ret=0;
@@ -46,9 +46,9 @@ int rfbGetBytes(unsigned char * bytes, int size)
 	start=bytes;
 	while (bytes_to_read)
 		{
-			if (bytes_to_read>MAX_BYTES_IN_ONE_READ)
+			if (bytes_to_read>MAX_BYTES_IN_ONE_READ_WRITE)
 			{
-				ret = read(rfb_sock, start, MAX_BYTES_IN_ONE_READ);
+				ret = read(rfb_sock, start, MAX_BYTES_IN_ONE_READ_WRITE);
 			}
 			else
 			{
@@ -77,7 +77,14 @@ int rfbSendBytes(unsigned char * bytes, int size)
 	start=bytes;
 	while (bytes_to_write)
 		{
-			ret = write(rfb_sock, start, bytes_to_write);
+			if (bytes_to_write>MAX_BYTES_IN_ONE_READ_WRITE)
+			{
+				ret = write(rfb_sock, start, MAX_BYTES_IN_ONE_READ_WRITE);
+			}
+			else
+			{
+				ret = write(rfb_sock, start, bytes_to_write);
+			}
 			if (ret<0)
 				break;
 			start+=ret;

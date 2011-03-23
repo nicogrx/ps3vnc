@@ -302,26 +302,6 @@ int view(void)
 	int i, ret;
 	ioPadInit(7);
 
-#if 1 // init screen before firt rendering
-	{
-		int j;
-		unsigned int * init_rectangle = (unsigned int*)raw_pixel_data;
-		for(j=0;j<rfb_info.server_init_msg.framebuffer_height;j++)
-		{
-		for(i=0;i<rfb_info.server_init_msg.framebuffer_width;i++)
-		{
-			init_rectangle[i*j]=0x000000FF; //BLUE
-		}
-		}
-		waitFlip();
-		drawRectangleToScreen(init_rectangle,
-		rfb_info.server_init_msg.framebuffer_width, 
-		rfb_info.server_init_msg.framebuffer_height,
-		0, 0, 0);
-		updateScreen();
-	}
-#endif
-
 	while(1) // main loop
 	{
 		//handle joystick events
@@ -368,13 +348,6 @@ int view(void)
 					0, 0, 1);
 					RPRINT("render screen\n");
 					updateScreen();
-
-#ifdef VERBOSE2
-					remoteSendBytes(raw_pixel_data,
-						rfb_info.server_init_msg.framebuffer_width*rfb_info.server_init_msg.framebuffer_height*4);
-					ret=-1;
-					goto end;
-#endif
 				}		
 				break;
 			case RFB_Bell:

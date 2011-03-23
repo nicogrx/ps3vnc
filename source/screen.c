@@ -87,7 +87,8 @@ int drawRectangleToScreen(unsigned int *buffer,
 		int swap)
 {
 	unsigned int h, w;
-	unsigned int * start;
+	unsigned int * src;
+	unsigned int * dest;
 	unsigned int pixel;
 	unsigned int s_pixel;
 
@@ -98,7 +99,8 @@ int drawRectangleToScreen(unsigned int *buffer,
 	{
 		return -1;
 	}
-	start=frame_buffers[current_frame_buffer]+y*res.width+x;
+	src = buffer;
+	dest=frame_buffers[current_frame_buffer]+y*res.width+x;
 	
 	if (swap)
 	{
@@ -106,17 +108,16 @@ int drawRectangleToScreen(unsigned int *buffer,
 		{
 			for(w = 0; w < width; w++)
 			{
-				pixel = buffer[h*w];
-				/*s_pixel =
+				pixel = src[w];
+				s_pixel =
 						((pixel >> 24) & 0x000000FF) |
 						((pixel >> 8) & 0x0000FF00) |
 						((pixel << 8) & 0x00FF0000) |
-						(pixel << 24);*/
-				s_pixel = ((pixel >> 8) & 0x00FFFFFF) |
-						(pixel<<24);
-				start[w]=s_pixel;
+						(pixel << 24);
+				dest[w]=s_pixel;
 			}
-			start+=res.width;
+			src+=width;
+			dest+=res.width;
 		}
 	}
 	else
@@ -125,10 +126,11 @@ int drawRectangleToScreen(unsigned int *buffer,
 		{
 			for(w = 0; w < width; w++)
 			{
-					pixel = buffer[h*w];
-					start[w] = pixel;
+				pixel = src[w];
+				dest[w] = pixel;
 			}
-			start+=res.width;
+			src+=width;
+			dest+=res.width;
 		}
 	}
 	return 0;

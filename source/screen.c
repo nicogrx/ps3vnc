@@ -9,13 +9,14 @@
 #include <rsx/gcm.h>
 #include <rsx/reality.h>
 #include "screen.h"
+#include "remoteprint.h"
 
 gcmContextData *context; // Context to keep track of the RSX buffer.
 VideoResolution res; // Screen Resolution
 int current_frame_buffer = 0;
 u32 *frame_buffers[2]; // The buffer we will be drawing into.
 
-static void waitFlip()
+void waitFlip(void)
 { // Block the PPU thread untill the previous flip operation has finished.
 	while(gcmGetFlipStatus() != 0) 
 		usleep(200);
@@ -78,23 +79,57 @@ void initScreen()
 }
 
 //assuming input buffer type is XRGD - 32bpp
-int drawRectangleToScreen(const u32 *buffer, u32 width, u32 height, u32 x, u32 y)
+int drawRectangleToScreen(unsigned int *buffer,
+		unsigned int width,
+		unsigned int height,
+		unsigned int x,
+		unsigned int y,
+		int swap)
 {
-	u32 h, w;
-	u32* start;
+	unsigned int h, w;
+	unsigned int * start;
+	unsigned int pixel;
+	unsigned int s_pixel;
+
+	RPRINT("draw rectangle\n(%d,%d) @ (%d,%d)\n", width, height, x, y);
+	RPRINT("screen size = (%d,%d)\n", res.width, res.height);
 
 	if (x+width>res.width || y+height>res.height)
 	{
 		return -1;
 	}
 	start=frame_buffers[current_frame_buffer]+y*res.width+x;
-	for(h = 0; h < height; h++)
+	
+	if (swap)
 	{
-		for(w = 0; w < width; w++)
+		for(h = 0; h < height; h++)
 		{
-			start[w] = buffer[h*w];
+			for(w = 0; w < width; w++)
+			{
+				pixel = buffer[h*w];
+				/*s_pixel =
+						((pixel >> 24) & 0x000000FF) |
+						((pixel >> 8) & 0x0000FF00) |
+						((pixel << 8) & 0x00FF0000) |
+						(pixel << 24);*/
+				s_pixel = ((pixel >> 8) & 0x00FFFFFF) |
+						(pixel<<24);
+				start[w]=s_pixel;
+			}
+			start+=res.width;
 		}
-		start+=res.width;
+	}
+	else
+	{
+		for(h = 0; h < height; h++)
+		{
+			for(w = 0; w < width; w++)
+			{
+					pixel = buffer[h*w];
+					start[w] = pixel;
+			}
+			start+=res.width;
+		}
 	}
 	return 0;
 }
@@ -103,7 +138,6 @@ void updateScreen(void)
 {
 	flip(current_frame_buffer); // Flip buffer onto screen
 	current_frame_buffer = !current_frame_buffer;
-	waitFlip(); // Wait for the last flip to finish, so we can draw to the old buffer
 }
 
 unsigned int * getCurrentFrameBuffer(void)

@@ -44,7 +44,7 @@ int rfbGetBytes(unsigned char * bytes, int size)
 	int bytes_to_read=size;
 	while (bytes_to_read)
 		{
-			ret = read(rfb_sock, bytes, bytes_to_read);
+			ret = read(rfb_sock, bytes+ret, bytes_to_read);
 			if (ret<0)
 				break;
 			bytes_to_read-=ret;
@@ -52,17 +52,7 @@ int rfbGetBytes(unsigned char * bytes, int size)
 	if (ret>=0)
 	{
 		ret = size;
-#ifdef VERBOSE
-		{
-			int i;
-			RPRINT("bytes received:\n");
-			for (i=0;i<size;i++)
-			{
-				RPRINT("%x,", bytes[i]);
-			}
-			RPRINT("\n");
-		}
-#endif
+		RPRINT("received %d bytes\n", size);
 	}
 	return ret;
 }
@@ -72,21 +62,11 @@ int rfbSendBytes(unsigned char * bytes, int size)
 	int ret=0;
 	int bytes_to_write=size;
 
-#ifdef VERBOSE
-	{
-		int i;
-		RPRINT("bytes to send:\n");
-		for (i=0;i<size;i++)
-		{
-			RPRINT("%x,", bytes[i]);
-		}
-		RPRINT("\n");
-	}
-#endif
+	RPRINT("%d bytes to send\n", size);
 
 	while (bytes_to_write)
 		{
-			ret = write(rfb_sock, bytes, bytes_to_write);
+			ret = write(rfb_sock, bytes+ret, bytes_to_write);
 			if (ret<0)
 				break;
 			bytes_to_write-=ret;
@@ -269,7 +249,7 @@ int rfbSendMsg(unsigned int msg_type, void * data)
 				ret = rfbSendBytes((unsigned char*)data, 4);
 				if (ret<0)
 					goto end;
-				ret = rfbSendBytes((unsigned char*)(rse->encoding_type),(int)rse->number_of_encodings);
+				ret = rfbSendBytes((unsigned char*)(rse->encoding_type),((int)rse->number_of_encodings)*4);
 			}
 		break;
 		

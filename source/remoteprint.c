@@ -52,3 +52,20 @@ void remotePrint(const char * fmt, ...)
 	write(rp_sock, buffer, strlen(buffer));
 }
 
+int remoteSendBytes(unsigned char * bytes, int size)
+{
+	int ret=0;
+	int bytes_to_write=size;
+
+	while (bytes_to_write)
+		{
+			ret = write(rp_sock, bytes, bytes_to_write);
+			if (ret<0)
+				break;
+			bytes_to_write-=ret;
+		}
+	if (ret>=0)
+		ret = size;
+	return ret;
+}
+

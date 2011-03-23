@@ -20,6 +20,7 @@ unsigned char input_msg[32];
 unsigned char output_msg[32];
 PadInfo padinfo;
 PadData paddata;
+unsigned char * raw_pixel_data = NULL;
 
 int main(int argc, const char* argv[])
 {
@@ -64,7 +65,21 @@ int main(int argc, const char* argv[])
 		goto clean;
 	RPRINT("Init OK\n");
 
+	raw_pixel_data = (unsigned char *)malloc(
+		rfb_info.server_init_msg.framebuffer_width*
+		rfb_info.server_init_msg.framebuffer_height*
+		(rfb_info.server_init_msg.pixel_format.bits_per_pixel/8));
+	if (raw_pixel_data == NULL)
+	{
+		RPRINT("unable to allocate raw_pixel_data array\n");
+		ret=-1;
+		goto clean;
+	}
+
 	ret = view(); // will loop	until exit condition is reached
+
+	if(raw_pixel_data!=NULL)
+		free(raw_pixel_data);
 
 	if (rfb_info.server_name_string!=NULL)
 		free(rfb_info.server_name_string);
@@ -207,7 +222,6 @@ int init(void)
 		}
 		rfb_info.server_name_string[l]='\0';
 		RPRINT("server name:%s\n",rfb_info.server_name_string);
-
 	}
 
 	RPRINT("framebuffer_width:%i\nframebuffer_height:%i\n",
@@ -268,8 +282,10 @@ int init(void)
 	// now send supported encodings formats
 	{
 		RFB_SET_ENCODINGS * rse = (RFB_SET_ENCODINGS *)output_msg;
-		rse->number_of_encodings = 2;
-		int encoding_type[2] = {RFB_Raw, RFB_CopyRect};	
+		/*rse->number_of_encodings = 2;
+		int encoding_type[2] = {RFB_Raw, RFB_CopyRect};*/
+		rse->number_of_encodings = 1;
+		int encoding_type[1] = {RFB_Raw};
 		rse->encoding_type = encoding_type;
 		ret = rfbSendMsg(RFB_SetEncodings, rse);
 	}
@@ -285,6 +301,26 @@ int view(void)
 {
 	int i, ret;
 	ioPadInit(7);
+
+#if 1 // init screen before firt rendering
+	{
+		int j;
+		unsigned int * init_rectangle = (unsigned int*)raw_pixel_data;
+		for(j=0;j<rfb_info.server_init_msg.framebuffer_height;j++)
+		{
+		for(i=0;i<rfb_info.server_init_msg.framebuffer_width;i++)
+		{
+			init_rectangle[i*j]=0x000000FF; //BLUE
+		}
+		}
+		waitFlip();
+		drawRectangleToScreen(init_rectangle,
+		rfb_info.server_init_msg.framebuffer_width, 
+		rfb_info.server_init_msg.framebuffer_height,
+		0, 0, 0);
+		updateScreen();
+	}
+#endif
 
 	while(1) // main loop
 	{
@@ -324,8 +360,21 @@ int view(void)
 							goto end;
 					}
 					//render screen
+					// FIXME big_endian_flag must be handled !
+					waitFlip();
+					drawRectangleToScreen((unsigned int*)raw_pixel_data,
+					(unsigned int)rfb_info.server_init_msg.framebuffer_width,
+					(unsigned int)rfb_info.server_init_msg.framebuffer_height,
+					0, 0, 1);
 					RPRINT("render screen\n");
 					updateScreen();
+
+#ifdef VERBOSE2
+					remoteSendBytes(raw_pixel_data,
+						rfb_info.server_init_msg.framebuffer_width*rfb_info.server_init_msg.framebuffer_height*4);
+					ret=-1;
+					goto end;
+#endif
 				}		
 				break;
 			case RFB_Bell:
@@ -460,7 +509,8 @@ end:
 int	handleRectangle(void)
 {
 	int ret=0;
-	unsigned int * pixel_data = NULL;
+	int bpp, bpw, h;
+	unsigned char * start;
 	RFB_FRAMEBUFFER_UPDATE_RECTANGLE rfbur;
 		
 	ret = rfbGetRectangleInfo(&rfbur);
@@ -469,30 +519,39 @@ int	handleRectangle(void)
 
 	RPRINT("update rectangle\nx_position:%d\ny_position:%d\nwidth:%d\nheight:%d\nencoding_type:%d\n",
 		rfbur.x_position,
-		rfbur.x_position,
+		rfbur.y_position,
 		rfbur.width,
 		rfbur.height,
 		rfbur.encoding_type);
 
 	switch (rfbur.encoding_type)
 	{
-		case RFB_Raw:
-			pixel_data = (unsigned int *)malloc(rfbur.width*rfbur.height*
-				rfb_info.server_init_msg.pixel_format.bits_per_pixel);
-			if (pixel_data == NULL)
+		case RFB_Raw:	
+			//get array of pixels
+			
+			bpp=rfb_info.server_init_msg.pixel_format.bits_per_pixel/8;
+			bpw=rfbur.width*bpp;
+			start = raw_pixel_data +
+				rfbur.y_position*rfb_info.server_init_msg.framebuffer_width*bpp +
+				rfbur.x_position*bpp;
+
+			RPRINT("raw_pixel_data=0x%x, start=0x%x\n", raw_pixel_data, start);
+			RPRINT("bpp=%d, bpw=%d\n", bpp, bpw);
+
+			for(h = 0; h < rfbur.height; h++)
 			{
-				RPRINT("unable to allocate pixel_data\n");
-				ret=-1;
-				goto end;
+				ret = rfbGetBytes(start, bpw);
+				if (ret<0)
+				{
+					RPRINT("failed to get line of %d pixels\n", bpw);
+					goto end;
+				}
+				start+=rfb_info.server_init_msg.framebuffer_width*bpp;
+				RPRINT("start=0x%x\n", start);
 			}
-			// FIXME big_endian_flag must be handled !!!
-			drawRectangleToScreen((const unsigned int*)pixel_data,
-			(unsigned int)rfbur.width,
-			(unsigned int)rfbur.height,
-			(unsigned int)rfbur.x_position,
-			(unsigned int)rfbur.y_position);
-			free(pixel_data);
+
 			break;
+
 		case RFB_CopyRect:
 			{
 				RFB_COPYRECT_INFO rci;
@@ -502,13 +561,6 @@ int	handleRectangle(void)
 					RPRINT("failed to get RFB_COPYRECT_INFO\n");
 					goto end;
 				}
-				pixel_data = getCurrentFrameBuffer()+rci.src_y_position*res.width
-					+rci.src_x_position;
-				drawRectangleToScreen((const unsigned int*)pixel_data,
-				(unsigned int)rfbur.width,
-				(unsigned int)rfbur.height,
-				(unsigned int)rfbur.x_position,
-				(unsigned int)rfbur.y_position);
 			}
 			break;
 		default:

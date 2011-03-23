@@ -2,5 +2,11 @@ extern VideoResolution res;
 
 extern void initScreen(void);
 extern void updateScreen(void);
-extern int drawRectangleToScreen(const u32 * buffer, u32 width, u32 height, u32 x, u32 y);
+int drawRectangleToScreen(unsigned int *buffer,
+		unsigned int width,
+		unsigned int height,
+		unsigned int x,
+		unsigned int y,
+		int swap);
 extern unsigned int * getCurrentFrameBuffer(void);
+extern void waitFlip(void);

@@ -10,6 +10,9 @@
 #include "rfb.h"
 #include "remoteprint.h"
 
+static volatile int send_mutex=0;
+static volatile int recv_mutex=0;
+
 int rfb_sock;
 
 int rfbConnect(const char * ip, int port)
@@ -43,6 +46,7 @@ int rfbGetBytes(unsigned char * bytes, int size)
 	int ret=0;
 	int bytes_to_read=size;
 	unsigned char * start;
+
 	start=bytes;
 	while (bytes_to_read)
 		{
@@ -62,7 +66,7 @@ int rfbGetBytes(unsigned char * bytes, int size)
 	if (ret>=0)
 	{
 		ret = size;
-		RPRINT("received %d bytes\n", size);
+		//RPRINT("received %d bytes\n", size);
 	}
 	return ret;
 }
@@ -72,7 +76,8 @@ int rfbSendBytes(unsigned char * bytes, int size)
 	int ret=0;
 	int bytes_to_write=size;
 	unsigned char * start;
-	RPRINT("%d bytes to send\n", size);
+	
+//RPRINT("%d bytes to send\n", size);
 
 	start=bytes;
 	while (bytes_to_write)
@@ -92,6 +97,7 @@ int rfbSendBytes(unsigned char * bytes, int size)
 		}
 	if (ret>=0)
 		ret = size;
+
 	return ret;
 }
 
@@ -248,6 +254,10 @@ int rfbGetServerInitMsg(RFB_SERVER_INIT_MSG * server_init_msg)
 int rfbSendMsg(unsigned int msg_type, void * data)
 {
 	int ret = 0;
+
+	while(send_mutex);
+	send_mutex++;
+
 	switch (msg_type)
 	{
 		case RFB_SetPIxelFormat:
@@ -317,6 +327,7 @@ int rfbSendMsg(unsigned int msg_type, void * data)
 			RPRINT("unknown client to server msg type:%d\n", msg_type);
 	}
 end:
+	send_mutex--;	
 	return ret;
 }
 
@@ -324,6 +335,10 @@ int rfbGetMsg(void * data)
 {
 	int ret = 0;
 	unsigned char msg_type;
+	
+	while(recv_mutex);
+	recv_mutex++;
+	
 	ret = rfbGetBytes(&msg_type, 1);
 	if (ret<0)
 		goto end;
@@ -367,6 +382,7 @@ int rfbGetMsg(void * data)
 			break;
 	}
 end:
+	recv_mutex--;
 	return ret;
 }
 

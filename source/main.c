@@ -1,4 +1,6 @@
+#include <unistd.h>
 #include <psl1ght/lv2/net.h>
+#include <psl1ght/lv2/thread.h>
 #include <io/pad.h>
 #include <sysutil/video.h>
 #include "remoteprint.h"
@@ -12,7 +14,9 @@ int handshake(char * password);
 int authenticate(char * password);
 int init(void);
 int view(void);
-int handlePadEvents(void);
+void handlePadEvents(u64 arg);
+void handleMsgs(u64 arg);
+void requestFrame(u64 arg);
 int handleRectangle(void);
 
 RFB_INFO rfb_info;
@@ -21,12 +25,23 @@ unsigned char output_msg[32];
 PadInfo padinfo;
 PadData paddata;
 unsigned char * raw_pixel_data = NULL;
+int vnc_end;
 
 int main(int argc, const char* argv[])
 {
 	int port, ret=0;
 	const char ip[] = "192.168.1.86";
+	//const char ip[] = "192.168.1.5";
 	char password[] = "nicogrx";
+
+	u64 thread_arg = 0x1337;
+	u64 priority = 1500;
+	u64 retval;
+	size_t stack_size = 0x1000;
+	char *hpe_name = "Handle Pad Event";
+	char *handle_msg_name = "Handle Message";
+	char *request_frame_name = "Request Frame";
+	sys_ppu_thread_t hpe_id, hmsg_id, rf_id;
 
 	ret = netInitialize();
 	if (ret < 0)
@@ -76,8 +91,17 @@ int main(int argc, const char* argv[])
 		goto clean;
 	}
 
-	ret = view(); // will loop	until exit condition is reached
-
+	ret = sys_ppu_thread_create(&hpe_id, handlePadEvents, thread_arg,
+		priority, stack_size, THREAD_JOINABLE, hpe_name);
+	ret = sys_ppu_thread_create(&hmsg_id, handleMsgs, thread_arg,
+		priority, stack_size, THREAD_JOINABLE, handle_msg_name);
+	ret = sys_ppu_thread_create(&rf_id, requestFrame, thread_arg,
+		priority, stack_size, THREAD_JOINABLE, request_frame_name);
+	
+	ret = sys_ppu_thread_join(hpe_id, &retval);
+	ret = sys_ppu_thread_join(hmsg_id, &retval);
+	ret = sys_ppu_thread_join(rf_id, &retval);
+	
 	if(raw_pixel_data!=NULL)
 		free(raw_pixel_data);
 
@@ -294,22 +318,12 @@ end:
 	return ret;
 }
 
-// infinite loop
-// - request frame update
-// - handle incoming msgs and render screen 
-int view(void)
+void requestFrame(u64 arg)
 {
-	int i, ret;
-	ioPadInit(7);
+	int ret = 0;
 
-	while(1) // main loop
+	while(!vnc_end)
 	{
-		//handle joystick events
-		RPRINT("handle pad events\n");
-		ret = handlePadEvents();
-		if (ret<0)
-			break;
-
 		// request framebuffer update
 		RPRINT("request framebuffer update\n");
 		RFB_FRAMEBUFFER_UPDATE_REQUEST * rfbur = (RFB_FRAMEBUFFER_UPDATE_REQUEST *)output_msg;
@@ -321,7 +335,19 @@ int view(void)
 		ret = rfbSendMsg(RFB_FramebufferUpdateRequest, rfbur);
 		if (ret<0)
 			break;
+		sys_ppu_thread_yield();
+		usleep(500000);
+	}
+	sys_ppu_thread_exit(0);
+	return;
+}
 
+// handle incoming msgs and render screen 
+void handleMsgs(u64 arg)
+{
+	int i, ret;
+	while(!vnc_end) // main loop
+	{
 		//handle server msgs
 		RPRINT("waiting for server message\n");
 		ret = rfbGetMsg(input_msg);
@@ -359,124 +385,144 @@ int view(void)
 				ret=-1;
 				goto end;
 		}
-
+		sys_ppu_thread_yield();
 		
 	} // end main loop
 
 end:
-	return ret;
+	sys_ppu_thread_exit(0);
+	vnc_end=1;
+	return;
 }
 
-
-int handlePadEvents(void)
+//handle joystick events
+void handlePadEvents(u64 arg)
 {
 	int i, ret=0, event=0;
 	static int buttons_state=0;
 	static int x=0;
 	static int y=0;
 
-	// first check joystick input events
-	ioPadGetInfo(&padinfo);
-	for(i=0; i<MAX_PADS; i++)
+	RPRINT("handle pad events\n");
+	ioPadInit(7);
+	while(!vnc_end)
 	{
-		if(padinfo.status[i])
+		// first check joystick input events
+		ioPadGetInfo(&padinfo);
+		for(i=0; i<MAX_PADS; i++)
 		{
-			ioPadGetData(i, &paddata);
-			if(paddata.BTN_TRIANGLE)
+			if(padinfo.status[i])
 			{
-				RPRINT("exit on user request\n");
-				ret = -1;
-				goto end;
-			}
+				ioPadGetData(i, &paddata);
+				if(paddata.BTN_TRIANGLE)
+				{
+					RPRINT("exit on user request\n");
+					vnc_end=1;
+				}
 
-			RFB_POINTER_EVENT * rpe = (RFB_POINTER_EVENT *)output_msg;
+				RFB_POINTER_EVENT * rpe = (RFB_POINTER_EVENT *)output_msg;
 			
-			if (paddata.BTN_SQUARE)
-			{
-				event = 1;
-				buttons_state |= M_LEFT;
-			}
-			else if (buttons_state & M_LEFT)
-			{
-				event = 1;
-				buttons_state &= ~M_LEFT;
-			}
+				if (paddata.BTN_SQUARE)
+				{
+					event = 1;
+					buttons_state |= M_LEFT;
+				}
+				else if (buttons_state & M_LEFT)
+				{
+					event = 1;
+					buttons_state &= ~M_LEFT;
+				}
 
-			if (paddata.BTN_CIRCLE)
-			{
-				event = 1;
-				buttons_state |= M_RIGHT;
-			}
-			else if (buttons_state & M_RIGHT)
-			{
-				event = 1;
-				buttons_state &= ~M_RIGHT;
-			}
+				if (paddata.BTN_CIRCLE)
+				{
+					event = 1;
+					buttons_state |= M_RIGHT;
+				}
+				else if (buttons_state & M_RIGHT)
+				{
+					event = 1;
+					buttons_state &= ~M_RIGHT;
+				}
 
-			if (paddata.BTN_L1)
-			{
-				event = 1;
-				buttons_state |= M_WHEEL_DOWN;
-			}
-			else if (buttons_state & M_WHEEL_DOWN)
-			{
-				event = 1;
-				buttons_state &= ~M_WHEEL_DOWN;
-			}
+				if (paddata.BTN_L1)
+				{
+					event = 1;
+					buttons_state |= M_WHEEL_DOWN;
+				}
+				else if (buttons_state & M_WHEEL_DOWN)
+				{
+					event = 1;
+					buttons_state &= ~M_WHEEL_DOWN;
+				}
 
-			if (paddata.BTN_R1)
-			{
-				event = 1;
-				buttons_state |= M_WHEEL_UP;
-			}
-			else if (buttons_state & M_WHEEL_UP)
-			{
-				event = 1;
-				buttons_state &= ~M_WHEEL_UP;
-			}
+				if (paddata.BTN_R1)
+				{
+					event = 1;
+					buttons_state |= M_WHEEL_UP;
+				}
+				else if (buttons_state & M_WHEEL_UP)
+				{
+					event = 1;
+					buttons_state &= ~M_WHEEL_UP;
+				}
 
-			if (paddata.BTN_LEFT)
-			{
-				event = 1;
-				if (x > 0)
-					x-=1;
-			}
+				if (paddata.BTN_LEFT)
+				{
+					event = 1;
+					if (x > 0)
+						x-=2;
+				}
 			
-			if (paddata.BTN_RIGHT)
-			{
-				event = 1;
-				if (x < res.width)
-					x+=1;
-			}
+				if (paddata.BTN_RIGHT)
+				{
+					event = 1;
+					if (x < res.width)
+						x+=2;
+				}
 			
-			if (paddata.BTN_UP)
-			{
-				event = 1;
-				if (y > 0)
-					y-=1;
-			}
+				if (paddata.BTN_UP)
+				{
+					event = 1;
+					if (y > 0)
+						y-=2;
+				}
 			
-			if (paddata.BTN_DOWN)
-			{
-				event = 1;
-				if (y < res.height)
-					y+=1;
-			}
+				if (paddata.BTN_DOWN)
+				{
+					event = 1;
+					if (y < res.height)
+						y+=2;
+				}
 
-			if (event)
-			{
-				rpe->button_mask = buttons_state;
-				rpe->x_position = x;
-				rpe->y_position = y;
-				ret = rfbSendMsg(RFB_PointerEvent, rpe);
-			}
+				if (event)
+				{
+					rpe->button_mask = buttons_state;
+					rpe->x_position = x;
+					rpe->y_position = y;
+					ret = rfbSendMsg(RFB_PointerEvent, rpe);
+					// request framebuffer update
+					RPRINT("request framebuffer update\n");
+					RFB_FRAMEBUFFER_UPDATE_REQUEST * rfbur = (RFB_FRAMEBUFFER_UPDATE_REQUEST *)output_msg;
+					rfbur->incremental = 1;
+					rfbur->x_position = 0;
+					rfbur->y_position = 0;
+					rfbur->width = rfb_info.server_init_msg.framebuffer_width;
+					rfbur->height = rfb_info.server_init_msg.framebuffer_height;
+					ret = rfbSendMsg(RFB_FramebufferUpdateRequest, rfbur);
+					if (ret<0)
+						goto end;
+				}
 			
-			break;
+				break;
+			}
 		}
+		sys_ppu_thread_yield();
+		usleep(20000);
 	}
-
 end:
-	return ret;
+	vnc_end=1;
+	sys_ppu_thread_exit(0);
+	return;
 }
 
 int	handleRectangle(void)
@@ -508,9 +554,6 @@ int	handleRectangle(void)
 				rfbur.y_position*rfb_info.server_init_msg.framebuffer_width*bpp +
 				rfbur.x_position*bpp;
 
-			RPRINT("raw_pixel_data=0x%x, start=0x%x\n", raw_pixel_data, start);
-			RPRINT("bpp=%d, bpw=%d\n", bpp, bpw);
-
 			for(h = 0; h < rfbur.height; h++)
 			{
 				ret = rfbGetBytes(start, bpw);
@@ -520,7 +563,6 @@ int	handleRectangle(void)
 					goto end;
 				}
 				start+=rfb_info.server_init_msg.framebuffer_width*bpp;
-				RPRINT("start=0x%x\n", start);
 			}
 
 			break;

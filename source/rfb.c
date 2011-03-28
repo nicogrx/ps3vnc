@@ -40,7 +40,7 @@ void rfbClose(void)
 	shutdown(rfb_sock, SHUT_RDWR);
 	close(rfb_sock);
 }
-#define MAX_BYTES_IN_ONE_READ_WRITE 512
+#define MAX_BYTES_IN_ONE_READ_WRITE 1408
 int rfbGetBytes(unsigned char * bytes, int size)
 {
 	int ret=0;

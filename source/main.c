@@ -1,4 +1,5 @@
 #include <unistd.h>
+#include <string.h>
 #include <psl1ght/lv2/net.h>
 #include <psl1ght/lv2/thread.h>
 #include <io/pad.h>
@@ -27,10 +28,13 @@ PadData paddata;
 unsigned char * raw_pixel_data = NULL;
 int vnc_end;
 
+volatile int frame_update_requested = 0;
+
 int main(int argc, const char* argv[])
 {
 	int port, ret=0;
 	const char ip[] = "192.168.1.86";
+	//const char ip[] = "192.168.1.83";
 	//const char ip[] = "192.168.1.5";
 	char password[] = "nicogrx";
 
@@ -306,10 +310,10 @@ int init(void)
 	// now send supported encodings formats
 	{
 		RFB_SET_ENCODINGS * rse = (RFB_SET_ENCODINGS *)output_msg;
-		/*rse->number_of_encodings = 2;
-		int encoding_type[2] = {RFB_Raw, RFB_CopyRect};*/
-		rse->number_of_encodings = 1;
-		int encoding_type[1] = {RFB_Raw};
+		rse->number_of_encodings = 2;
+		int encoding_type[2] = {RFB_Raw, RFB_CopyRect};
+		//rse->number_of_encodings = 1;
+		//int encoding_type[1] = {RFB_Raw};
 		rse->encoding_type = encoding_type;
 		ret = rfbSendMsg(RFB_SetEncodings, rse);
 	}
@@ -324,19 +328,24 @@ void requestFrame(u64 arg)
 
 	while(!vnc_end)
 	{
-		// request framebuffer update
-		RPRINT("request framebuffer update\n");
-		RFB_FRAMEBUFFER_UPDATE_REQUEST * rfbur = (RFB_FRAMEBUFFER_UPDATE_REQUEST *)output_msg;
-		rfbur->incremental = 1;
-		rfbur->x_position = 0;
-		rfbur->y_position = 0;
-		rfbur->width = rfb_info.server_init_msg.framebuffer_width;
-		rfbur->height = rfb_info.server_init_msg.framebuffer_height;
-		ret = rfbSendMsg(RFB_FramebufferUpdateRequest, rfbur);
-		if (ret<0)
-			break;
+
+		if (!frame_update_requested)
+		{
+			frame_update_requested=1;
+			// request framebuffer update
+			RPRINT("request framebuffer update\n");
+			RFB_FRAMEBUFFER_UPDATE_REQUEST * rfbur = (RFB_FRAMEBUFFER_UPDATE_REQUEST *)output_msg;
+			rfbur->incremental = 1;
+			rfbur->x_position = 0;
+			rfbur->y_position = 0;
+			rfbur->width = rfb_info.server_init_msg.framebuffer_width;
+			rfbur->height = rfb_info.server_init_msg.framebuffer_height;
+			ret = rfbSendMsg(RFB_FramebufferUpdateRequest, rfbur);
+			if (ret<0)
+				break;
+		}
 		sys_ppu_thread_yield();
-		usleep(500000);
+		usleep(1000000);
 	}
 	sys_ppu_thread_exit(0);
 	return;
@@ -358,6 +367,7 @@ void handleMsgs(u64 arg)
 		{
 			case RFB_FramebufferUpdate:
 				{
+					frame_update_requested=0;
 					RFB_FRAMEBUFFER_UPDATE * rfbu = (RFB_FRAMEBUFFER_UPDATE *)input_msg;
 					for (i=0;i<rfbu->number_of_rectangles;i++)
 					{
@@ -470,28 +480,28 @@ void handlePadEvents(u64 arg)
 				{
 					event = 1;
 					if (x > 0)
-						x-=2;
+						x-=1;
 				}
 			
 				if (paddata.BTN_RIGHT)
 				{
 					event = 1;
 					if (x < res.width)
-						x+=2;
+						x+=1;
 				}
 			
 				if (paddata.BTN_UP)
 				{
 					event = 1;
 					if (y > 0)
-						y-=2;
+						y-=1;
 				}
 			
 				if (paddata.BTN_DOWN)
 				{
 					event = 1;
 					if (y < res.height)
-						y+=2;
+						y+=1;
 				}
 
 				if (event)
@@ -500,24 +510,28 @@ void handlePadEvents(u64 arg)
 					rpe->x_position = x;
 					rpe->y_position = y;
 					ret = rfbSendMsg(RFB_PointerEvent, rpe);
-					// request framebuffer update
-					RPRINT("request framebuffer update\n");
-					RFB_FRAMEBUFFER_UPDATE_REQUEST * rfbur = (RFB_FRAMEBUFFER_UPDATE_REQUEST *)output_msg;
-					rfbur->incremental = 1;
-					rfbur->x_position = 0;
-					rfbur->y_position = 0;
-					rfbur->width = rfb_info.server_init_msg.framebuffer_width;
-					rfbur->height = rfb_info.server_init_msg.framebuffer_height;
-					ret = rfbSendMsg(RFB_FramebufferUpdateRequest, rfbur);
-					if (ret<0)
-						goto end;
+
+					if (!frame_update_requested)
+					{
+						frame_update_requested=1;
+						// request framebuffer update
+						RPRINT("request framebuffer update\n");
+						RFB_FRAMEBUFFER_UPDATE_REQUEST * rfbur = (RFB_FRAMEBUFFER_UPDATE_REQUEST *)output_msg;
+						rfbur->incremental = 1;
+						rfbur->x_position = 0;
+						rfbur->y_position = 0;
+						rfbur->width = rfb_info.server_init_msg.framebuffer_width;
+						rfbur->height = rfb_info.server_init_msg.framebuffer_height;
+						ret = rfbSendMsg(RFB_FramebufferUpdateRequest, rfbur);
+						if (ret<0)
+							goto end;
+					}
 				}
-			
-				break;
 			}
+			break;
 		}
 		sys_ppu_thread_yield();
-		usleep(20000);
+		usleep(5000);
 	}
 end:
 	vnc_end=1;
@@ -528,7 +542,7 @@ end:
 int	handleRectangle(void)
 {
 	int ret=0;
-	int bpp, bpw, h;
+	int bpp, bpw, h, fb_bpw;
 	unsigned char * start;
 	RFB_FRAMEBUFFER_UPDATE_RECTANGLE rfbur;
 		
@@ -570,11 +584,27 @@ int	handleRectangle(void)
 		case RFB_CopyRect:
 			{
 				RFB_COPYRECT_INFO rci;
+				unsigned char * src;
+				unsigned char * dest;
 				ret = rfbGetBytes((unsigned char *)&rci, sizeof(RFB_COPYRECT_INFO));
 				if (ret<0)
 				{
 					RPRINT("failed to get RFB_COPYRECT_INFO\n");
 					goto end;
+				}
+				
+				bpp=rfb_info.server_init_msg.pixel_format.bits_per_pixel/8;
+				bpw=rfbur.width*bpp;
+				fb_bpw = rfb_info.server_init_msg.framebuffer_width*bpp;
+
+				src = raw_pixel_data + fb_bpw * rci.src_y_position + rci.src_x_position * bpp;
+				dest = raw_pixel_data + fb_bpw * rfbur.y_position + rfbur.x_position * bpp; 
+
+				for(h = 0; h < rfbur.height; h++)
+				{
+					memcpy((void*)dest, (void*)src, bpw);
+					src += fb_bpw; 
+					dest+= fb_bpw;
 				}
 			}
 			break;

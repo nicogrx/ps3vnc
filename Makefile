@@ -17,7 +17,7 @@ APPID			:= VNC0VIEWER1
 CONTENTID	:= UP0001-$(APPID)_00-0000000000000000
 PKGFILES	:= release
 ICON0			:= $(SOURCE)/ICON0.PNG 
-CFLAGS		+= -O2 -Wall -std=gnu99 -DVERBOSE
+CFLAGS		+= -O2 -Wall -std=gnu99 -UVERBOSE
 CXXFLAGS	+= -O2 -Wall
 
 ifneq ($(BUILD),$(notdir $(CURDIR)))

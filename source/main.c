@@ -26,6 +26,7 @@ unsigned char output_msg[32];
 PadInfo padinfo;
 PadData paddata;
 unsigned char * raw_pixel_data = NULL;
+unsigned char * old_raw_pixel_data = NULL;
 int vnc_end;
 
 volatile int frame_update_requested = 0;
@@ -88,9 +89,22 @@ int main(int argc, const char* argv[])
 		rfb_info.server_init_msg.framebuffer_width*
 		rfb_info.server_init_msg.framebuffer_height*
 		(rfb_info.server_init_msg.pixel_format.bits_per_pixel/8));
+
 	if (raw_pixel_data == NULL)
 	{
 		RPRINT("unable to allocate raw_pixel_data array\n");
+		ret=-1;
+		goto clean;
+	}
+
+	old_raw_pixel_data = (unsigned char *)malloc(
+		rfb_info.server_init_msg.framebuffer_width*
+		rfb_info.server_init_msg.framebuffer_height*
+		(rfb_info.server_init_msg.pixel_format.bits_per_pixel/8));
+
+	if (old_raw_pixel_data == NULL)
+	{
+		RPRINT("unable to allocate old_raw_pixel_data array\n");
 		ret=-1;
 		goto clean;
 	}
@@ -108,6 +122,8 @@ int main(int argc, const char* argv[])
 	
 	if(raw_pixel_data!=NULL)
 		free(raw_pixel_data);
+	if(old_raw_pixel_data!=NULL)
+		free(old_raw_pixel_data);
 
 	if (rfb_info.server_name_string!=NULL)
 		free(rfb_info.server_name_string);
@@ -384,6 +400,12 @@ void handleMsgs(u64 arg)
 					0, 0, 1);
 					RPRINT("render screen\n");
 					updateScreen();
+
+					memcpy(old_raw_pixel_data, raw_pixel_data, 
+						rfb_info.server_init_msg.framebuffer_width*
+						rfb_info.server_init_msg.framebuffer_height*
+						(rfb_info.server_init_msg.pixel_format.bits_per_pixel/8));
+
 				}		
 				break;
 			case RFB_Bell:
@@ -597,7 +619,7 @@ int	handleRectangle(void)
 				bpw=rfbur.width*bpp;
 				fb_bpw = rfb_info.server_init_msg.framebuffer_width*bpp;
 
-				src = raw_pixel_data + fb_bpw * rci.src_y_position + rci.src_x_position * bpp;
+				src = old_raw_pixel_data + fb_bpw * rci.src_y_position + rci.src_x_position * bpp;
 				dest = raw_pixel_data + fb_bpw * rfbur.y_position + rfbur.x_position * bpp; 
 
 				for(h = 0; h < rfbur.height; h++)

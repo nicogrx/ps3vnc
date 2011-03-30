@@ -146,3 +146,7 @@ unsigned int * getCurrentFrameBuffer(void)
 {
 	return frame_buffers[current_frame_buffer];
 }
+unsigned int * getOldFrameBuffer(void)
+{
+	return frame_buffers[!current_frame_buffer];
+}

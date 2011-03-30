@@ -9,4 +9,5 @@ int drawRectangleToScreen(unsigned int *buffer,
 		unsigned int y,
 		int swap);
 extern unsigned int * getCurrentFrameBuffer(void);
+extern unsigned int * getOldFrameBuffer(void);
 extern void waitFlip(void);

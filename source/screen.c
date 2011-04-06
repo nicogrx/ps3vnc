@@ -90,7 +90,6 @@ int drawRectangleToScreen(unsigned int *buffer,
 	unsigned int * src;
 	unsigned int * dest;
 	unsigned int pixel;
-	unsigned int s_pixel;
 
 	RPRINT("draw rectangle\n(%d,%d) @ (%d,%d)\n", width, height, x, y);
 	RPRINT("screen size = (%d,%d)\n", res.width, res.height);
@@ -109,12 +108,7 @@ int drawRectangleToScreen(unsigned int *buffer,
 			for(w = 0; w < width; w++)
 			{
 				pixel = src[w];
-				s_pixel =
-						((pixel >> 24) & 0x000000FF) |
-						((pixel >> 8) & 0x0000FF00) |
-						((pixel << 8) & 0x00FF0000) |
-						(pixel << 24);
-				dest[w]=s_pixel;
+				dest[w]=pixel>>8;
 			}
 			src+=width;
 			dest+=res.width;

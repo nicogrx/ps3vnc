@@ -45,7 +45,7 @@ enum ClientToServerMsgs
 
 enum ServerToClientMsgs
 {
-	RFB_FramebufferUpdate,
+	RFB_FramebufferUpdate=0,
 	RFB_SetColourMapEntries,
 	RFB_Bell,
 	RFB_ServerCutText

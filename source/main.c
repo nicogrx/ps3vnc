@@ -2,7 +2,12 @@
 #include <string.h>
 #include <psl1ght/lv2/net.h>
 #include <psl1ght/lv2/thread.h>
+#ifdef PAD_ENABLED
 #include <io/pad.h>
+#endif
+#ifdef MOUSE_ENABLED
+#include <io/mouse.h>
+#endif
 #include <io/kb.h> 
 #include <sysutil/video.h>
 #include "remoteprint.h"
@@ -27,20 +32,17 @@ int handleRectangle(void);
 RFB_INFO rfb_info;
 unsigned char input_msg[32];
 unsigned char output_msg[32];
-PadInfo padinfo;
-PadData paddata;
 unsigned char * raw_pixel_data = NULL;
 unsigned char * old_raw_pixel_data = NULL;
 int vnc_end;
+unsigned char draw_mode;
 
 volatile int frame_update_requested = 0;
 
 int main(int argc, const char* argv[])
 {
 	int port, ret=0;
-	const char ip[] = "192.168.1.86";
-	//const char ip[] = "192.168.1.83";
-	//const char ip[] = "192.168.1.5";
+	const char ip[] = "192.168.1.21";
 	char password[] = "nicogrx";
 
 	u64 thread_arg = 0x1337;
@@ -57,13 +59,13 @@ int main(int argc, const char* argv[])
 		return ret;
 
 #ifdef VERBOSE
-	ret = remotePrintConnect();
+	ret = remotePrintConnect(ip);
 	if (ret<0)
 		goto end;
 #endif
 	RPRINT("start PS3 Vnc viewer\n");
 	
-	for(port=5900;port<5930;port++)
+	for(port=5901;port<5930;port++)
 	{
 		ret = rfbConnect(ip,port);
 		if (ret>=0)
@@ -114,18 +116,18 @@ int main(int argc, const char* argv[])
 	}
 
 	ret = sys_ppu_thread_create(&hmsg_id, handleMsgs, thread_arg,
-		priority, stack_size, THREAD_JOINABLE, handle_msg_name);
+		priority+1, stack_size, THREAD_JOINABLE, handle_msg_name);
 	ret = sys_ppu_thread_create(&hie_id, handleInputEvents, thread_arg,
 		priority, stack_size, THREAD_JOINABLE, handle_input_name);
 	ret = sys_ppu_thread_create(&rf_id, requestFrame, thread_arg,
-		priority, stack_size, THREAD_JOINABLE, request_frame_name);
+		priority-1, stack_size, THREAD_JOINABLE, request_frame_name);
 	
 	ret = sys_ppu_thread_join(rf_id, &retval);
 	RPRINT("join thread rf_id\n");
 	ret = sys_ppu_thread_join(hie_id, &retval);
 	RPRINT("join thread hie_id\n");
-	ret = sys_ppu_thread_join(hmsg_id, &retval);
-	RPRINT("join thread hmsg_id\n");
+	//ret = sys_ppu_thread_join(hmsg_id, &retval);
+	//RPRINT("join thread hmsg_id\n");
 	
 	if(raw_pixel_data!=NULL)
 		free(raw_pixel_data);
@@ -305,14 +307,18 @@ int init(void)
 		goto end;
 	}
 	
-	// FIXME: in theory, every pixel format should be supported ...
-	// at least, all bpp&depth
-	// moreover, should be possible to send prefered PIXEL FORMAT to server
-	// instead of just existing...
-
 	// check bpp & depth
-	if (rfb_info.server_init_msg.pixel_format.bits_per_pixel!=32 ||
-			rfb_info.server_init_msg.pixel_format.depth!=24)
+	// FIXME: in theory, every pixel format should be supported ...
+	// moreover, should be possible to send prefered PIXEL FORMAT to server
+	if (rfb_info.server_init_msg.pixel_format.bits_per_pixel==32 &&	rfb_info.server_init_msg.pixel_format.depth==24)
+	{
+		draw_mode=DS_MODE_32BPP;
+	}
+	else if (rfb_info.server_init_msg.pixel_format.bits_per_pixel==16 && rfb_info.server_init_msg.pixel_format.depth==16)
+	{
+		draw_mode=DS_MODE_16BPP;
+	}
+	else
 	{
 		RPRINT("cannot handle bpp=%d, depth=%d\n",
 		rfb_info.server_init_msg.pixel_format.bits_per_pixel,
@@ -356,7 +362,6 @@ void requestFrame(u64 arg)
 		{
 			frame_update_requested=1;
 			// request framebuffer update
-			RPRINT("request framebuffer update\n");
 			RFB_FRAMEBUFFER_UPDATE_REQUEST * rfbur = (RFB_FRAMEBUFFER_UPDATE_REQUEST *)output_msg;
 			rfbur->incremental = 1;
 			rfbur->x_position = 0;
@@ -366,9 +371,10 @@ void requestFrame(u64 arg)
 			ret = rfbSendMsg(RFB_FramebufferUpdateRequest, rfbur);
 			if (ret<0)
 				break;
+			RPRINT("requested timed framebuffer update\n");
 		}
 		sys_ppu_thread_yield();
-		usleep(500000);
+		usleep(1000000);
 	}
 	sys_ppu_thread_exit(0);
 	return;
@@ -383,14 +389,15 @@ void handleMsgs(u64 arg)
 		//handle server msgs
 		RPRINT("waiting for server message\n");
 		ret = rfbGetMsg(input_msg);
-		if (ret<0)
-			break;
-		
+		if (ret<=0)
+		{
+			sys_ppu_thread_yield();
+			continue;
+		}
 		switch (input_msg[0])
 		{
 			case RFB_FramebufferUpdate:
 				{
-					frame_update_requested=0;
 					RFB_FRAMEBUFFER_UPDATE * rfbu = (RFB_FRAMEBUFFER_UPDATE *)input_msg;
 					for (i=0;i<rfbu->number_of_rectangles;i++)
 					{
@@ -398,13 +405,24 @@ void handleMsgs(u64 arg)
 						if (ret<0)
 							goto end;
 					}
+					frame_update_requested=0;
 					//render screen
 					// FIXME big_endian_flag must be handled !
 					waitFlip();
-					drawRectangleToScreen((unsigned int*)raw_pixel_data,
-					(unsigned int)rfb_info.server_init_msg.framebuffer_width,
-					(unsigned int)rfb_info.server_init_msg.framebuffer_height,
-					0, 0, 1);
+					if(draw_mode == DS_MODE_16BPP)
+					{
+						draw16bppRectangleToScreen((unsigned short *)raw_pixel_data,
+						(unsigned int)rfb_info.server_init_msg.framebuffer_width,
+						(unsigned int)rfb_info.server_init_msg.framebuffer_height,
+						0, 0);
+					}
+					else if (draw_mode == DS_MODE_32BPP)
+					{
+						draw32bppRectangleToScreen((unsigned int*)raw_pixel_data,
+						(unsigned int)rfb_info.server_init_msg.framebuffer_width,
+						(unsigned int)rfb_info.server_init_msg.framebuffer_height,
+						0, 0);
+					}
 					RPRINT("render screen\n");
 					updateScreen();
 
@@ -424,8 +442,6 @@ void handleMsgs(u64 arg)
 				ret=-1;
 				goto end;
 		}
-		sys_ppu_thread_yield();
-		
 	} // end main loop
 
 end:
@@ -447,17 +463,28 @@ unsigned short convertKeyCode(unsigned short keycode)
 			symdef = XK_Tab;
 			break;
 		case 0xa:
+		case 0xd:
 			symdef = XK_Return;
 			break;
 		case 0xb:
 			symdef = XK_Clear;
 			break;
-		case 0xd:
-			symdef = XK_Return;
-			break;
-		case 0x1b:
+		case 0x8029:
 			symdef = XK_Escape;
 			break;
+		case 0x8050:
+			symdef = XK_Left;
+			break;
+		case 0x8052:
+			symdef = XK_Up;
+			break;
+		case 0x804f:
+			symdef = XK_Right;
+			break;
+		case 0x8051:
+			symdef = XK_Down;
+			break;
+
 		default:
 			symdef=keycode;
 	}
@@ -474,7 +501,16 @@ void handleInputEvents(u64 arg)
 	unsigned short old_keycode[MAX_KEYPRESS];
 	int keycode_updated = 0;
 	int i, j, k, ret=0;
+#ifdef PAD_ENABLED
 	int pad_event=0;
+	PadInfo padinfo;
+	PadData paddata;
+#endif
+#ifdef MOUSE_ENABLED
+	int mouse_event=0;
+	MouseInfo mouseinfo;
+	MouseData mousedata;
+#endif
 	int buttons_state=0;
 	int x=0;
 	int y=0;
@@ -483,7 +519,13 @@ void handleInputEvents(u64 arg)
 	RPRINT("handle input events\n");
 	
 	ioKbInit(MAX_KB_PORT_NUM);
+#ifdef PAD_ENABLED	
 	ioPadInit(7);
+#endif
+#ifdef MOUSE_ENABLED
+	ioMouseInit(2);
+#endif
+
 	memset(keycode, 0, sizeof(unsigned short)*MAX_KEYPRESS);
 	memset(old_keycode, 0, sizeof(unsigned short)*MAX_KEYPRESS);
 	
@@ -584,7 +626,7 @@ void handleInputEvents(u64 arg)
 			//ioKbClearBuf(i);
 			break;
 		}
-
+#ifdef PAD_ENABLED
 		// check joystick input events
 		ioPadGetInfo(&padinfo);
 		for(i=0; i<MAX_PADS; i++)
@@ -683,13 +725,115 @@ void handleInputEvents(u64 arg)
 			}
 			break;
 		}
-		
+#endif
+#ifdef MOUSE_ENABLED
+		// check joystick input events
+		ioMouseGetInfo(&mouseinfo);
+		for(i=0; i<MAX_MICE; i++)
+		{
+			if(mouseinfo.status[0])
+			{
+				ioMouseGetData(i, &mousedata);
+				if (!mousedata.update)
+				{
+					break;	
+				}
+				
+				RPRINT("MouseDATA buttons:%u, x_axis:%i, y_axis:%i, wheel:%i, tilt:%i\n",
+					mousedata.buttons,
+					mousedata.x_axis,
+					mousedata.y_axis,
+					mousedata.wheel,
+					mousedata.tilt );
+				
+				if (mousedata.buttons==4)
+				{
+					RPRINT("exit on user request\n");
+					vnc_end=1;
+				}
+
+				if (mousedata.buttons==1)
+				{
+					mouse_event = 1;
+					buttons_state |= M_LEFT;
+				}
+				else if (buttons_state & M_LEFT)
+				{
+					mouse_event = 1;
+					buttons_state &= ~M_LEFT;
+				}
+
+				if (mousedata.buttons==2)
+				{
+					mouse_event = 1;
+					buttons_state |= M_RIGHT;
+				}
+				else if (buttons_state & M_RIGHT)
+				{
+					mouse_event = 1;
+					buttons_state &= ~M_RIGHT;
+				}
+
+				if (mousedata.wheel==-1)
+				{
+					mouse_event = 1;
+					buttons_state |= M_WHEEL_DOWN;
+				}
+				else if (buttons_state & M_WHEEL_DOWN)
+				{
+					mouse_event = 1;
+					buttons_state &= ~M_WHEEL_DOWN;
+				}
+
+				if (mousedata.wheel==1)
+				{
+					mouse_event = 1;
+					buttons_state |= M_WHEEL_UP;
+				}
+				else if (buttons_state & M_WHEEL_UP)
+				{
+					mouse_event = 1;
+					buttons_state &= ~M_WHEEL_UP;
+				}
+
+				if (mousedata.x_axis!=0)
+				{
+					mouse_event = 1;
+					int new_x;
+					new_x = x+mousedata.x_axis;
+					if (new_x > 0 && new_x < res.width)
+						x+=mousedata.x_axis;
+				}
+			
+				if (mousedata.y_axis!=0)
+				{
+					mouse_event = 1;
+					int new_y;
+					new_y = y+mousedata.y_axis;
+					if (new_y > 0 && new_y < res.height)
+						y+=mousedata.y_axis;
+				}
+			
+				if (mouse_event)
+				{
+					mouse_event = 0;
+					request_frame_update=1;
+					RFB_POINTER_EVENT * rpe = (RFB_POINTER_EVENT *)output_msg;
+					rpe->button_mask = buttons_state;
+					rpe->x_position = x;
+					rpe->y_position = y;
+					ret = rfbSendMsg(RFB_PointerEvent, rpe);
+				}
+			}
+			break;
+		}
+#endif
+
 		if (vnc_end || (request_frame_update && !frame_update_requested))
 		{
 			frame_update_requested=1;
 			request_frame_update=0;
 			// request framebuffer update
-			RPRINT("request framebuffer update\n");
 			RFB_FRAMEBUFFER_UPDATE_REQUEST * rfbur = (RFB_FRAMEBUFFER_UPDATE_REQUEST *)output_msg;
 			rfbur->incremental = 1;
 			rfbur->x_position = 0;
@@ -699,13 +843,19 @@ void handleInputEvents(u64 arg)
 			ret = rfbSendMsg(RFB_FramebufferUpdateRequest, rfbur);
 			if (ret<0)
 				goto end;
+			RPRINT("requested framebuffer update due to input event\n");
 		}
 		sys_ppu_thread_yield();
-		usleep(5000);
+		usleep(2500);
 	}
 end:
 	ioKbEnd();
+#ifdef PAD_ENABLED
 	ioPadEnd();
+#endif
+#ifdef MOUSE_ENABLED
+	ioMouseEnd();
+#endif
 	sys_ppu_thread_exit(0);
 	return;
 }
@@ -713,7 +863,7 @@ end:
 int	handleRectangle(void)
 {
 	int ret=0;
-	int bpp, bpw, h, fb_bpw;
+	int bpp, bpw, h, rfb_bpw;
 	unsigned char * start;
 	RFB_FRAMEBUFFER_UPDATE_RECTANGLE rfbur;
 		
@@ -728,16 +878,15 @@ int	handleRectangle(void)
 		rfbur.height,
 		rfbur.encoding_type);
 
+	bpp=rfb_info.server_init_msg.pixel_format.bits_per_pixel/8;
+	bpw=rfbur.width*bpp;
+	rfb_bpw = rfb_info.server_init_msg.framebuffer_width*bpp;
+
 	switch (rfbur.encoding_type)
 	{
 		case RFB_Raw:	
 			//get array of pixels
-			
-			bpp=rfb_info.server_init_msg.pixel_format.bits_per_pixel/8;
-			bpw=rfbur.width*bpp;
-			start = raw_pixel_data +
-				rfbur.y_position*rfb_info.server_init_msg.framebuffer_width*bpp +
-				rfbur.x_position*bpp;
+			start = raw_pixel_data + rfbur.y_position*rfb_bpw + rfbur.x_position*bpp;
 
 			for(h = 0; h < rfbur.height; h++)
 			{
@@ -747,7 +896,7 @@ int	handleRectangle(void)
 					RPRINT("failed to get line of %d pixels\n", bpw);
 					goto end;
 				}
-				start+=rfb_info.server_init_msg.framebuffer_width*bpp;
+				start+=rfb_bpw;
 			}
 
 			break;
@@ -764,18 +913,14 @@ int	handleRectangle(void)
 					goto end;
 				}
 				
-				bpp=rfb_info.server_init_msg.pixel_format.bits_per_pixel/8;
-				bpw=rfbur.width*bpp;
-				fb_bpw = rfb_info.server_init_msg.framebuffer_width*bpp;
-
-				src = old_raw_pixel_data + fb_bpw * rci.src_y_position + rci.src_x_position * bpp;
-				dest = raw_pixel_data + fb_bpw * rfbur.y_position + rfbur.x_position * bpp; 
+				src = old_raw_pixel_data + rfb_bpw * rci.src_y_position + rci.src_x_position * bpp;
+				dest = raw_pixel_data + rfb_bpw * rfbur.y_position + rfbur.x_position * bpp; 
 
 				for(h = 0; h < rfbur.height; h++)
 				{
 					memcpy((void*)dest, (void*)src, bpw);
-					src += fb_bpw; 
-					dest+= fb_bpw;
+					src += rfb_bpw; 
+					dest+= rfb_bpw;
 				}
 			}
 			break;

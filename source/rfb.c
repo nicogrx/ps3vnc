@@ -1,44 +1,50 @@
-#include <psl1ght/lv2/net.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
+#include <sys/fcntl.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <net/net.h>
 #include <arpa/inet.h>
 #include "rfb.h"
 #include "remoteprint.h"
 
-static volatile int send_mutex=0;
-static volatile int recv_mutex=0;
-
 int rfb_sock;
+fd_set rfb_socks;
 
 int rfbConnect(const char * ip, int port)
 {
 	int ret;
+	int x;
 	struct sockaddr_in server;
-
-	rfb_sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
+	
+	rfb_sock = netSocket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
 	if (rfb_sock < 0) {
 		ret = -1;
 		goto end;
 	}
+
+  x=fcntl(rfb_sock,F_GETFL,0);
+  fcntl(rfb_sock,F_SETFL,x | O_NONBLOCK);
+	
 	memset(&server, 0, sizeof(server));
 	server.sin_len = sizeof(server);
 	server.sin_family = AF_INET;
 	inet_pton(AF_INET, ip, &server.sin_addr);
 	server.sin_port = htons(port);
-	ret = connect(rfb_sock, (struct sockaddr*)&server, sizeof(server));
+
+	ret = netConnect(rfb_sock, (struct sockaddr*)&server, sizeof(server));
+
 end:
 	return ret;
 }
 
 void rfbClose(void)
 {
-	shutdown(rfb_sock, SHUT_RDWR);
-	close(rfb_sock);
+	netShutdown(rfb_sock, SHUT_RDWR);
+	netClose(rfb_sock);
 }
 #define MAX_BYTES_IN_ONE_READ_WRITE 1408
 int rfbGetBytes(unsigned char * bytes, int size)
@@ -52,11 +58,11 @@ int rfbGetBytes(unsigned char * bytes, int size)
 		{
 			if (bytes_to_read>MAX_BYTES_IN_ONE_READ_WRITE)
 			{
-				ret = read(rfb_sock, start, MAX_BYTES_IN_ONE_READ_WRITE);
+				ret = netRecv(rfb_sock, start, MAX_BYTES_IN_ONE_READ_WRITE, 0);
 			}
 			else
 			{
-				ret = read(rfb_sock, start, bytes_to_read);
+				ret = netRecv(rfb_sock, start, bytes_to_read, 0);
 			}
 			if (ret<0)
 				break;
@@ -84,11 +90,11 @@ int rfbSendBytes(unsigned char * bytes, int size)
 		{
 			if (bytes_to_write>MAX_BYTES_IN_ONE_READ_WRITE)
 			{
-				ret = write(rfb_sock, start, MAX_BYTES_IN_ONE_READ_WRITE);
+				ret = netSend(rfb_sock, start, MAX_BYTES_IN_ONE_READ_WRITE, 0);
 			}
 			else
 			{
-				ret = write(rfb_sock, start, bytes_to_write);
+				ret = netSend(rfb_sock, start, bytes_to_write, 0);
 			}
 			if (ret<0)
 				break;
@@ -255,9 +261,6 @@ int rfbSendMsg(unsigned int msg_type, void * data)
 {
 	int ret = 0;
 
-	while(send_mutex);
-	send_mutex++;
-
 	switch (msg_type)
 	{
 		case RFB_SetPIxelFormat:
@@ -327,8 +330,12 @@ int rfbSendMsg(unsigned int msg_type, void * data)
 			RPRINT("unknown client to server msg type:%d\n", msg_type);
 	}
 end:
-	send_mutex--;	
 	return ret;
+}
+
+static int checkForIncomingMsg(unsigned char * msg_type)
+{
+	return netRecv(rfb_sock, msg_type, 1, 0);
 }
 
 int rfbGetMsg(void * data)
@@ -336,43 +343,36 @@ int rfbGetMsg(void * data)
 	int ret = 0;
 	unsigned char msg_type;
 	
-	while(recv_mutex);
-	recv_mutex++;
-	
-	ret = rfbGetBytes(&msg_type, 1);
-	if (ret<0)
+	ret = checkForIncomingMsg(&msg_type);
+	if (ret<=0)
 		goto end;
+
+	*(unsigned char *)data=msg_type;
 	switch ((int)msg_type)
 	{
 		case RFB_FramebufferUpdate:
 			RPRINT("received msg RFB_FramebufferUpdate from server\n");
 			{
-				RFB_FRAMEBUFFER_UPDATE * rfbu;
-				rfbu = (RFB_FRAMEBUFFER_UPDATE *)data;
-				ret = rfbGetBytes(((unsigned char *)rfbu)+1, sizeof(RFB_FRAMEBUFFER_UPDATE)-1);
+				ret = rfbGetBytes(((unsigned char *)data)+1, sizeof(RFB_FRAMEBUFFER_UPDATE)-1);
 			}
 			break;
 
 		case RFB_SetColourMapEntries:
 			RPRINT("received msg RFB_SetColourMapEntries from server\n");
 			{
-				RFB_SET_COLOUR_MAP_ENTRIES * rsmpe;
-				rsmpe = (RFB_SET_COLOUR_MAP_ENTRIES *)data;
-				ret = rfbGetBytes(((unsigned char *)rsmpe)+1, sizeof(RFB_SET_COLOUR_MAP_ENTRIES)-1);
+				ret = rfbGetBytes(((unsigned char *)data)+1, sizeof(RFB_SET_COLOUR_MAP_ENTRIES)-1);
 			}
 			break;
 			
 		case RFB_Bell:
 			RPRINT("received msg RFB_Bell from server\n");
-			ret = RFB_Bell;
+			ret = 1;
 			break;
 
 		case RFB_ServerCutText:
 			RPRINT("received msg RFB_ServerCutText from server\n");
 			{
-				RFB_SERVER_CUT_TEXT * rsct;
-				rsct = (RFB_SERVER_CUT_TEXT *)data;
-				ret = rfbGetBytes(((unsigned char *)rsct)+1, sizeof(RFB_SERVER_CUT_TEXT)-1);
+				ret = rfbGetBytes(((unsigned char *)data)+1, sizeof(RFB_SERVER_CUT_TEXT)-1);
 			}
 			break;
 		
@@ -382,7 +382,6 @@ int rfbGetMsg(void * data)
 			break;
 	}
 end:
-	recv_mutex--;
 	return ret;
 }
 

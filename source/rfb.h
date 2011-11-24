@@ -191,8 +191,7 @@ typedef struct
 	unsigned char padding1;
 	unsigned char padding2;
 	unsigned char padding3;
-	unsigned int length;
-	unsigned char * text;
+	unsigned int	length;
 } RFB_SERVER_CUT_TEXT;
 
 // prototypes

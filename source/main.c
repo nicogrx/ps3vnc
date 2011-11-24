@@ -436,6 +436,26 @@ void handleMsgs(u64 arg)
 			case RFB_Bell:
 				break;
 			case RFB_ServerCutText:
+				{
+					RFB_SERVER_CUT_TEXT * rsct = (RFB_SERVER_CUT_TEXT *)input_msg;
+					char * text = NULL;
+					text = (char*)malloc(rsct->length+1);
+					if (text==NULL)
+					{
+						RPRINT("cannot allocate %u bytes to get cut text buffer\n", rsct->length);
+						ret=-1;
+						goto end;
+					}
+					ret = rfbGetBytes((unsigned char*)text, rsct->length);
+					if (ret<0)
+					{
+						free(text);
+						goto end;
+					}
+					//do something with cut text!
+					free(text);
+				}
+				break;
 			case RFB_SetColourMapEntries:
 			default:
 				RPRINT("cannot handle msg type:%d\n", input_msg[0]);

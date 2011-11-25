@@ -26,7 +26,6 @@ static int init(void);
 static unsigned short convertKeyCode(unsigned short keycode);
 static void handleInputEvents(u64 arg);
 static void handleMsgs(u64 arg);
-static void requestFrame(u64 arg);
 static int handleRectangle(void);
 static int HandleRRERectangles(const RFB_FRAMEBUFFER_UPDATE_RECTANGLE *, int, int, int);
 
@@ -52,8 +51,7 @@ int main(int argc, const char* argv[])
 	size_t stack_size = 0x1000;
 	char *handle_input_name = "Handle input events";
 	char *handle_msg_name = "Handle message";
-	char *request_frame_name = "Request frame";
-	sys_ppu_thread_t hie_id, hmsg_id, rf_id;
+	sys_ppu_thread_t hie_id, hmsg_id;
 
 	ret = netInitialize();
 	if (ret < 0)
@@ -120,18 +118,9 @@ int main(int argc, const char* argv[])
 		priority, stack_size, THREAD_JOINABLE, handle_msg_name);
 	ret = sys_ppu_thread_create(&hie_id, handleInputEvents, thread_arg,
 		priority, stack_size, THREAD_JOINABLE, handle_input_name);
-#if 1	
-	ret = sys_ppu_thread_create(&rf_id, requestFrame, thread_arg,
-		priority, stack_size, THREAD_JOINABLE, request_frame_name);
-	ret = sys_ppu_thread_join(rf_id, &retval);
-	RPRINT("join thread rf_id\n");
-#endif	
 	ret = sys_ppu_thread_join(hie_id, &retval);
 	RPRINT("join thread hie_id\n");
-#if 0	
-	ret = sys_ppu_thread_join(hmsg_id, &retval);
-	RPRINT("join thread hmsg_id\n");
-#endif	
+	
 	if(raw_pixel_data!=NULL)
 		free(raw_pixel_data);
 	if(old_raw_pixel_data!=NULL)
@@ -352,34 +341,6 @@ end:
 	return ret;
 }
 
-static void requestFrame(u64 arg)
-{
-	int ret = 0;
-
-	while(!vnc_end)
-	{
-
-		if (!frame_update_requested)
-		{
-			frame_update_requested=1;
-			// request framebuffer update
-			RFB_FRAMEBUFFER_UPDATE_REQUEST * rfbur = (RFB_FRAMEBUFFER_UPDATE_REQUEST *)output_msg;
-			rfbur->incremental = 1;
-			rfbur->x_position = 0;
-			rfbur->y_position = 0;
-			rfbur->width = rfb_info.server_init_msg.framebuffer_width;
-			rfbur->height = rfb_info.server_init_msg.framebuffer_height;
-			ret = rfbSendMsg(RFB_FramebufferUpdateRequest, rfbur);
-			if (ret<0)
-				break;
-			RPRINT("requested timed framebuffer update\n");
-		}
-		usleep(20000);
-	}
-	sys_ppu_thread_exit(0);
-	return;
-}
-
 // handle incoming msgs and render screen 
 static void handleMsgs(u64 arg)
 {
@@ -425,6 +386,22 @@ static void handleMsgs(u64 arg)
 					}
 					RPRINT("render screen\n");
 					updateScreen();
+
+					if (!frame_update_requested)
+					{
+						frame_update_requested=1;
+						// request framebuffer update
+						RFB_FRAMEBUFFER_UPDATE_REQUEST * rfbur = (RFB_FRAMEBUFFER_UPDATE_REQUEST *)output_msg;
+						rfbur->incremental = 1;
+						rfbur->x_position = 0;
+						rfbur->y_position = 0;
+						rfbur->width = rfb_info.server_init_msg.framebuffer_width;
+						rfbur->height = rfb_info.server_init_msg.framebuffer_height;
+						ret = rfbSendMsg(RFB_FramebufferUpdateRequest, rfbur);
+						if (ret<0)
+							goto end;
+						RPRINT("requested framebuffer update after rendering screen\n");
+					}
 
 					memcpy(old_raw_pixel_data, raw_pixel_data, 
 						rfb_info.server_init_msg.framebuffer_width*

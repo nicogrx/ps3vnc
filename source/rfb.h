@@ -173,6 +173,14 @@ typedef struct
 
 typedef struct
 {	
+	unsigned short x_position;
+	unsigned short y_position;
+	unsigned short width;
+	unsigned short height;
+} RFB_RRE_SUBRECT_INFO;
+
+typedef struct
+{	
 	unsigned char msg_type;
 	unsigned char padding;
 	unsigned short first_colour;

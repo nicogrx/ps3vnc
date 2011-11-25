@@ -19,16 +19,18 @@
 #include "keysymdef.h"
 #include "mouse.h"
 
-int handshake(char * password);
-int authenticate(char * password);
-int init(void);
-int view(void);
-unsigned short convertKeyCode(unsigned short keycode);
-void handleInputEvents(u64 arg);
-void handleMsgs(u64 arg);
-void requestFrame(u64 arg);
-int handleRectangle(void);
+// functions prototypes
+static int handshake(char * password);
+static int authenticate(char * password);
+static int init(void);
+static unsigned short convertKeyCode(unsigned short keycode);
+static void handleInputEvents(u64 arg);
+static void handleMsgs(u64 arg);
+static void requestFrame(u64 arg);
+static int handleRectangle(void);
+static int HandleRRERectangles(const RFB_FRAMEBUFFER_UPDATE_RECTANGLE *, int, int, int);
 
+// globals
 RFB_INFO rfb_info;
 unsigned char input_msg[32];
 unsigned char output_msg[32];
@@ -36,7 +38,6 @@ unsigned char * raw_pixel_data = NULL;
 unsigned char * old_raw_pixel_data = NULL;
 int vnc_end;
 unsigned char draw_mode;
-
 volatile int frame_update_requested = 0;
 
 int main(int argc, const char* argv[])
@@ -116,19 +117,21 @@ int main(int argc, const char* argv[])
 	}
 
 	ret = sys_ppu_thread_create(&hmsg_id, handleMsgs, thread_arg,
-		priority+1, stack_size, THREAD_JOINABLE, handle_msg_name);
+		priority, stack_size, THREAD_JOINABLE, handle_msg_name);
 	ret = sys_ppu_thread_create(&hie_id, handleInputEvents, thread_arg,
 		priority, stack_size, THREAD_JOINABLE, handle_input_name);
+#if 1	
 	ret = sys_ppu_thread_create(&rf_id, requestFrame, thread_arg,
-		priority-1, stack_size, THREAD_JOINABLE, request_frame_name);
-	
+		priority, stack_size, THREAD_JOINABLE, request_frame_name);
 	ret = sys_ppu_thread_join(rf_id, &retval);
 	RPRINT("join thread rf_id\n");
+#endif	
 	ret = sys_ppu_thread_join(hie_id, &retval);
 	RPRINT("join thread hie_id\n");
-	//ret = sys_ppu_thread_join(hmsg_id, &retval);
-	//RPRINT("join thread hmsg_id\n");
-	
+#if 0	
+	ret = sys_ppu_thread_join(hmsg_id, &retval);
+	RPRINT("join thread hmsg_id\n");
+#endif	
 	if(raw_pixel_data!=NULL)
 		free(raw_pixel_data);
 	if(old_raw_pixel_data!=NULL)
@@ -148,7 +151,7 @@ end:
 	return ret;
 }
 
-int handshake(char * password)
+static int handshake(char * password)
 {
 	int ret;
 	char * reason=NULL;
@@ -224,7 +227,7 @@ end:
 	return ret;
 }
 
-int authenticate(char * password)
+static int authenticate(char * password)
 {
 	int ret;
 	unsigned char challenge[16];
@@ -240,7 +243,7 @@ end:
 	return ret;
 }
 
-int init(void)
+static int init(void)
 {
 	int ret;
 	ret = rfbSendClientInit(RFB_NOT_SHARED);
@@ -339,10 +342,8 @@ int init(void)
 	// now send supported encodings formats
 	{
 		RFB_SET_ENCODINGS * rse = (RFB_SET_ENCODINGS *)output_msg;
-		rse->number_of_encodings = 2;
-		int encoding_type[2] = {RFB_Raw, RFB_CopyRect};
-		//rse->number_of_encodings = 1;
-		//int encoding_type[1] = {RFB_Raw};
+		rse->number_of_encodings = 3;
+		int encoding_type[3] = {RFB_RRE, RFB_CopyRect, RFB_Raw};
 		rse->encoding_type = encoding_type;
 		ret = rfbSendMsg(RFB_SetEncodings, rse);
 	}
@@ -351,7 +352,7 @@ end:
 	return ret;
 }
 
-void requestFrame(u64 arg)
+static void requestFrame(u64 arg)
 {
 	int ret = 0;
 
@@ -373,15 +374,14 @@ void requestFrame(u64 arg)
 				break;
 			RPRINT("requested timed framebuffer update\n");
 		}
-		sys_ppu_thread_yield();
-		usleep(1000000);
+		usleep(20000);
 	}
 	sys_ppu_thread_exit(0);
 	return;
 }
 
 // handle incoming msgs and render screen 
-void handleMsgs(u64 arg)
+static void handleMsgs(u64 arg)
 {
 	int i, ret;
 	while(!vnc_end) // main loop
@@ -391,7 +391,7 @@ void handleMsgs(u64 arg)
 		ret = rfbGetMsg(input_msg);
 		if (ret<=0)
 		{
-			sys_ppu_thread_yield();
+			usleep(10000);
 			continue;
 		}
 		switch (input_msg[0])
@@ -470,7 +470,7 @@ end:
 	return;
 }
 
-unsigned short convertKeyCode(unsigned short keycode)
+static unsigned short convertKeyCode(unsigned short keycode)
 {
 	unsigned short symdef;
 
@@ -512,7 +512,7 @@ unsigned short convertKeyCode(unsigned short keycode)
 }
 
 //handle joystick events
-void handleInputEvents(u64 arg)
+static void handleInputEvents(u64 arg)
 {
 	KbInfo kbinfo;
 	KbData kbdata;
@@ -759,12 +759,13 @@ void handleInputEvents(u64 arg)
 					break;	
 				}
 				
-				RPRINT("MouseDATA buttons:%u, x_axis:%i, y_axis:%i, wheel:%i, tilt:%i\n",
+				/*RPRINT("MouseDATA buttons:%u, x_axis:%i, y_axis:%i, wheel:%i, tilt:%i\n",
 					mousedata.buttons,
 					mousedata.x_axis,
 					mousedata.y_axis,
 					mousedata.wheel,
 					mousedata.tilt );
+				*/
 				
 				if (mousedata.buttons==4)
 				{
@@ -865,7 +866,6 @@ void handleInputEvents(u64 arg)
 				goto end;
 			RPRINT("requested framebuffer update due to input event\n");
 		}
-		sys_ppu_thread_yield();
 		usleep(2500);
 	}
 end:
@@ -880,11 +880,10 @@ end:
 	return;
 }
 
-int	handleRectangle(void)
+static int handleRectangle(void)
 {
 	int ret=0;
-	int bpp, bpw, h, rfb_bpw;
-	unsigned char * start;
+	int bpp, bpw, rfb_bpw;
 	RFB_FRAMEBUFFER_UPDATE_RECTANGLE rfbur;
 		
 	ret = rfbGetRectangleInfo(&rfbur);
@@ -904,21 +903,22 @@ int	handleRectangle(void)
 
 	switch (rfbur.encoding_type)
 	{
-		case RFB_Raw:	
-			//get array of pixels
-			start = raw_pixel_data + rfbur.y_position*rfb_bpw + rfbur.x_position*bpp;
-
-			for(h = 0; h < rfbur.height; h++)
+		case RFB_Raw:
 			{
-				ret = rfbGetBytes(start, bpw);
-				if (ret<0)
+				unsigned char * dest;
+				int h;
+				dest = raw_pixel_data + rfbur.y_position*rfb_bpw + rfbur.x_position*bpp;
+				for(h = 0; h < rfbur.height; h++)
 				{
-					RPRINT("failed to get line of %d pixels\n", bpw);
-					goto end;
+					ret = rfbGetBytes(dest, bpw);
+					if (ret<0)
+					{
+						RPRINT("failed to get line of %d pixels\n", bpw);
+						goto end;
+					}
+					dest+=rfb_bpw;
 				}
-				start+=rfb_bpw;
 			}
-
 			break;
 
 		case RFB_CopyRect:
@@ -926,6 +926,7 @@ int	handleRectangle(void)
 				RFB_COPYRECT_INFO rci;
 				unsigned char * src;
 				unsigned char * dest;
+				int h;
 				ret = rfbGetBytes((unsigned char *)&rci, sizeof(RFB_COPYRECT_INFO));
 				if (ret<0)
 				{
@@ -944,6 +945,11 @@ int	handleRectangle(void)
 				}
 			}
 			break;
+		case RFB_RRE:
+			{
+				ret=HandleRRERectangles(&rfbur, bpp, bpw, rfb_bpw);
+			}
+			break;
 		default:
 			RPRINT("unsupported encoding type:%d\n", rfbur.encoding_type);
 			ret = -1;
@@ -953,3 +959,125 @@ int	handleRectangle(void)
 end:
 	return ret;
 }
+
+static int HandleRRERectangles(const RFB_FRAMEBUFFER_UPDATE_RECTANGLE * rfbur,
+	int bpp, int bpw, int rfb_bpw)
+{
+	int ret=0;
+	unsigned char header[8];
+	unsigned char subrect_info[12];
+
+	unsigned int * nb_sub_rectangles;
+	int sr, w, h;
+	unsigned char * dest;
+	RFB_RRE_SUBRECT_INFO * rrsi;
+	
+	ret = rfbGetBytes(header, 4 + bpp);
+	if (ret<0)
+	{
+		RPRINT("RFB_RRE, failed to get header\n");
+		goto end;
+	}
+	nb_sub_rectangles = (unsigned int *)header;
+	dest = raw_pixel_data + rfbur->y_position*rfb_bpw + rfbur->x_position*bpp;
+
+	switch (bpp)
+	{
+		case 2:
+			{
+				unsigned short * bg_pixel_value;
+				unsigned short * subrect_pixel_value;
+				unsigned short * start;
+				
+				bg_pixel_value = (unsigned short *)(header+4);
+				start = (unsigned short *)dest;
+
+				//first, draw background color
+				for (h=0;h<rfbur->height;h++)	// FIXME: use Altivec here !
+				{
+					for(w=0;w<rfbur->width;w++)
+					{
+						start[w]=*bg_pixel_value;
+					}	
+					start+=rfb_info.server_init_msg.framebuffer_width;
+				}
+
+				for (sr=0;sr<*nb_sub_rectangles;sr++)
+				{
+					ret = rfbGetBytes(subrect_info, 8 + bpp);
+					if (ret<0)
+					{
+						RPRINT("RFB_RRE, failed to get sub rect info\n");
+						goto end;
+					}
+
+					subrect_pixel_value = (unsigned short *)subrect_info;
+					rrsi = (RFB_RRE_SUBRECT_INFO *)(subrect_info+bpp);
+
+					start=(unsigned short*)(dest + rrsi->y_position*rfb_bpw + rrsi->x_position*bpp);
+
+					for (h=0;h<rrsi->height;h++)	// FIXME: use Altivec here !
+					{
+						for(w=0;w<rrsi->width;w++)
+						{
+							start[w]=*subrect_pixel_value;
+						}	
+						start+=rfb_info.server_init_msg.framebuffer_width;
+					}
+				}
+			}
+			break;
+		case 4:
+			{
+				unsigned int * bg_pixel_value;
+				unsigned int * subrect_pixel_value;
+				unsigned int * start;
+				
+				bg_pixel_value = (unsigned int *)(header+4);
+				start = (unsigned int *)dest;
+
+				//first, draw background color
+				for (h=0;h<rfbur->height;h++)	// FIXME: use Altivec here !
+				{
+					for(w=0;w<rfbur->width;w++)
+					{
+						start[w]=*bg_pixel_value;
+					}	
+					start+=rfb_info.server_init_msg.framebuffer_width;
+				}
+
+				for (sr=0;sr<*nb_sub_rectangles;sr++)
+				{
+					ret = rfbGetBytes(subrect_info, 8 + bpp);
+					if (ret<0)
+					{
+						RPRINT("RFB_RRE, failed to get sub rect info\n");
+						goto end;
+					}
+
+					subrect_pixel_value = (unsigned int *)subrect_info;
+					rrsi = (RFB_RRE_SUBRECT_INFO *)(subrect_info+bpp);
+
+					start=(unsigned int*)(dest + rrsi->y_position*rfb_bpw + rrsi->x_position*bpp);
+
+					for (h=0;h<rrsi->height;h++)	// FIXME: use Altivec here !
+					{
+						for(w=0;w<rrsi->width;w++)
+						{
+							start[w]=*subrect_pixel_value;
+						}	
+						start+=rfb_info.server_init_msg.framebuffer_width;
+					}
+				}
+			}
+			break;
+
+		default:
+			RPRINT("RFB_RRE, invalid bpp\n");
+			goto end;
+	}
+
+end:
+	return ret;
+
+}				

@@ -943,11 +943,13 @@ static int HandleRRERectangles(const RFB_FRAMEBUFFER_UPDATE_RECTANGLE * rfbur,
 	int ret=0;
 	unsigned char header[8];
 	unsigned char subrect_info[12];
-
-	unsigned int * nb_sub_rectangles;
+	unsigned int nb_sub_rectangles;
 	int sr, w, h;
 	unsigned char * dest;
 	RFB_RRE_SUBRECT_INFO * rrsi;
+
+	unsigned short * tmp_pshort;
+	unsigned int * tmp_pint;
 	
 	ret = rfbGetBytes(header, 4 + bpp);
 	if (ret<0)
@@ -955,31 +957,81 @@ static int HandleRRERectangles(const RFB_FRAMEBUFFER_UPDATE_RECTANGLE * rfbur,
 		RPRINT("RFB_RRE, failed to get header\n");
 		goto end;
 	}
-	nb_sub_rectangles = (unsigned int *)header;
+	
+	tmp_pint = (unsigned int *)header;
+	nb_sub_rectangles = *tmp_pint;
+
 	dest = raw_pixel_data + rfbur->y_position*rfb_bpw + rfbur->x_position*bpp;
+
+	RPRINT("RRE: %u sub-rectangles to draw\n", nb_sub_rectangles);
 
 	switch (bpp)
 	{
-		case 2:
+		case 2: // 16 bits per pixel
 			{
-				unsigned short * bg_pixel_value;
-				unsigned short * subrect_pixel_value;
+				unsigned short bg_pixel_value;
+				unsigned short subrect_pixel_value;
 				unsigned short * start;
-				
-				bg_pixel_value = (unsigned short *)(header+4);
-				start = (unsigned short *)dest;
+			
+				tmp_pshort = (unsigned short *)(header+4);
+				bg_pixel_value = *tmp_pshort;
 
 				//first, draw background color
-				for (h=0;h<rfbur->height;h++)	// FIXME: use Altivec here !
+				if ( (((unsigned long)dest & 0xF)==0) && (rfbur->width>=8) ) // address must be 16bytes aligned and pixel width >= 8
 				{
-					for(w=0;w<rfbur->width;w++)
+					// use altivec
+					vector unsigned short v_bg_pixel_value = (vector unsigned short){bg_pixel_value,
+																																					 bg_pixel_value,
+																																					 bg_pixel_value,
+																																					 bg_pixel_value,
+																																					 bg_pixel_value,
+																																					 bg_pixel_value,
+																																					 bg_pixel_value,
+																																					 bg_pixel_value};
+					vector unsigned short * v_dest = (vector unsigned short*)dest;
+					int v_width = rfbur->width/8;
+					int vrest_width = rfbur->width%8;
+					int vres_width = rfb_info.server_init_msg.framebuffer_width/8;
+
+					RPRINT("use altivec to draw background color [%x]\n", bg_pixel_value);
+					for (h=0;h<rfbur->height;h++)
 					{
-						start[w]=*bg_pixel_value;
-					}	
-					start+=rfb_info.server_init_msg.framebuffer_width;
+						for(w=0;w<v_width;w++)
+						{
+							v_dest[w]=v_bg_pixel_value;
+						}
+						v_dest+=vres_width;
+					}
+
+					if (vrest_width)
+					{
+						start = (unsigned short*)(dest+v_width*16);
+						for(h=0;h<rfbur->height;h++)
+						{
+							for(w = 0; w < vrest_width; w++)
+							{
+								start[w]=bg_pixel_value;
+							}
+							start+=rfb_info.server_init_msg.framebuffer_width;
+						}
+					}
+					
+				}
+				else // use scalar
+				{
+					start = (unsigned short *)dest;
+					for (h=0;h<rfbur->height;h++)
+					{
+						for(w=0;w<rfbur->width;w++)
+						{
+							start[w]=bg_pixel_value;
+						}	
+						start+=rfb_info.server_init_msg.framebuffer_width;
+					}
 				}
 
-				for (sr=0;sr<*nb_sub_rectangles;sr++)
+				// then, draw sub rectangles
+				for (sr=0;sr<nb_sub_rectangles;sr++)
 				{
 					ret = rfbGetBytes(subrect_info, 8 + bpp);
 					if (ret<0)
@@ -988,7 +1040,8 @@ static int HandleRRERectangles(const RFB_FRAMEBUFFER_UPDATE_RECTANGLE * rfbur,
 						goto end;
 					}
 
-					subrect_pixel_value = (unsigned short *)subrect_info;
+					tmp_pshort = (unsigned short *)subrect_info;
+					subrect_pixel_value = *tmp_pshort;
 					rrsi = (RFB_RRE_SUBRECT_INFO *)(subrect_info+bpp);
 
 					start=(unsigned short*)(dest + rrsi->y_position*rfb_bpw + rrsi->x_position*bpp);
@@ -997,20 +1050,21 @@ static int HandleRRERectangles(const RFB_FRAMEBUFFER_UPDATE_RECTANGLE * rfbur,
 					{
 						for(w=0;w<rrsi->width;w++)
 						{
-							start[w]=*subrect_pixel_value;
+							start[w]=subrect_pixel_value;
 						}	
 						start+=rfb_info.server_init_msg.framebuffer_width;
 					}
 				}
 			}
 			break;
-		case 4:
+		case 4: // 32 bits per pixel
 			{
-				unsigned int * bg_pixel_value;
-				unsigned int * subrect_pixel_value;
+				unsigned int bg_pixel_value;
+				unsigned int subrect_pixel_value;
 				unsigned int * start;
 				
-				bg_pixel_value = (unsigned int *)(header+4);
+				tmp_pint = (unsigned int *)(header+4);
+				bg_pixel_value = *tmp_pint;
 				start = (unsigned int *)dest;
 
 				//first, draw background color
@@ -1018,12 +1072,12 @@ static int HandleRRERectangles(const RFB_FRAMEBUFFER_UPDATE_RECTANGLE * rfbur,
 				{
 					for(w=0;w<rfbur->width;w++)
 					{
-						start[w]=*bg_pixel_value;
+						start[w]=bg_pixel_value;
 					}	
 					start+=rfb_info.server_init_msg.framebuffer_width;
 				}
 
-				for (sr=0;sr<*nb_sub_rectangles;sr++)
+				for (sr=0;sr<nb_sub_rectangles;sr++)
 				{
 					ret = rfbGetBytes(subrect_info, 8 + bpp);
 					if (ret<0)
@@ -1032,7 +1086,8 @@ static int HandleRRERectangles(const RFB_FRAMEBUFFER_UPDATE_RECTANGLE * rfbur,
 						goto end;
 					}
 
-					subrect_pixel_value = (unsigned int *)subrect_info;
+					tmp_pint = (unsigned int *)subrect_info;
+					subrect_pixel_value = *tmp_pint;
 					rrsi = (RFB_RRE_SUBRECT_INFO *)(subrect_info+bpp);
 
 					start=(unsigned int*)(dest + rrsi->y_position*rfb_bpw + rrsi->x_position*bpp);
@@ -1041,7 +1096,7 @@ static int HandleRRERectangles(const RFB_FRAMEBUFFER_UPDATE_RECTANGLE * rfbur,
 					{
 						for(w=0;w<rrsi->width;w++)
 						{
-							start[w]=*subrect_pixel_value;
+							start[w]=subrect_pixel_value;
 						}	
 						start+=rfb_info.server_init_msg.framebuffer_width;
 					}

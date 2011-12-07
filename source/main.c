@@ -1,33 +1,38 @@
 #include <unistd.h>
 #include <string.h>
-#include <psl1ght/lv2/net.h>
-#include <psl1ght/lv2/thread.h>
+#include <net/net.h>
+#include <sys/thread.h>
 #ifdef PAD_ENABLED
 #include <io/pad.h>
 #endif
 #ifdef MOUSE_ENABLED
 #include <io/mouse.h>
 #endif
-#include <io/kb.h> 
-#include <sysutil/video.h>
-#include "remoteprint.h"
-#include "screen.h"
+#include <io/kb.h>
+
 #include "rfb.h"
 #include "vncauth.h"
+
+#include "rsxutil.h"
+#include "screen.h"
+
 #define XK_MISCELLANY
 #define XK_LATIN1
 #include "keysymdef.h"
 #include "mouse.h"
+
+#include "psprint.h"
 
 // functions prototypes
 static int handshake(char * password);
 static int authenticate(char * password);
 static int init(void);
 static unsigned short convertKeyCode(unsigned short keycode);
-static void handleInputEvents(u64 arg);
-static void handleMsgs(u64 arg);
+static void handleInputEvents(void * arg);
+static void handleMsgs(void * arg);
 static int handleRectangle(void);
 static int HandleRRERectangles(const RFB_FRAMEBUFFER_UPDATE_RECTANGLE *, int, int, int);
+static void pstermRefresh(void * arg);
 
 // globals
 RFB_INFO rfb_info;
@@ -37,58 +42,86 @@ unsigned char * raw_pixel_data = NULL;
 unsigned char * old_raw_pixel_data = NULL;
 int vnc_end;
 unsigned char draw_mode;
-volatile int frame_update_requested = 0;
+volatile int frame_update_requested;
+
+unsigned int psprint_on;
+unsigned int display_in_progress;
 
 int main(int argc, const char* argv[])
 {
 	int port, ret=0;
-	const char ip[] = "192.168.1.21";
+	//const char ip[] = "192.168.1.21";
+	const char ip[] = "192.168.1.32";
 	char password[] = "nicogrx";
 
-	u64 thread_arg = 0x1337;
-	u64 priority = 1500;
 	u64 retval;
+	sys_ppu_thread_t hie_id, hmsg_id;
+	u64 priority = 1500;
 	size_t stack_size = 0x1000;
 	char *handle_input_name = "Handle input events";
 	char *handle_msg_name = "Handle message";
-	sys_ppu_thread_t hie_id, hmsg_id;
+#ifdef VERBOSE
+	char *psterm_refresh_name = "PSTerm refresh";
+	sys_ppu_thread_t psterm_refresh_id;
+#endif
+	void *thread_arg = (void*)0x1337;
+	
+	frame_update_requested=0;
+	display_in_progress=0;
+	psprint_on=0;
 
 	ret = netInitialize();
 	if (ret < 0)
 		return ret;
+	
+	initDisplay();
 
 #ifdef VERBOSE
-	ret = remotePrintConnect(ip);
+	psfont.char_width=8;
+	psfont.char_height=16;
+	psterm.width=40;
+	psterm.height=65;
+	psterm.bg_color=0x00;
+	psterm.fg_color=0xFFFFFF00;
+	ret = PSTermInit(&psterm, &psfont);
 	if (ret<0)
 		goto end;
+#ifdef REMOTE_PRINT
+	ret = remotePrintConnect(ip);
+	if (ret<0)
+		goto end2;
 #endif
-	RPRINT("start PS3 Vnc viewer\n");
-	
+
+	ret = sysThreadCreate(&psterm_refresh_id, pstermRefresh, thread_arg,
+		priority, stack_size, THREAD_JOINABLE, psterm_refresh_name);
+#endif
+
+	PSPRINT("start PS3 Vnc viewer\n");
+
 	for(port=5901;port<5930;port++)
 	{
 		ret = rfbConnect(ip,port);
 		if (ret>=0)
 		{
-			RPRINT("connected to serveur %s:%i\n", ip, port);
+			PSPRINT("connected to serveur %s:%i\n", ip, port);
 			break;
 		}
 	}
 	if (ret<0)
 	{
-		RPRINT("failed to connect to server %s\n", ip);
-		goto clean_rp;
+		PSPRINT("failed to connect to server %s\n", ip);
+		goto end3;
 	}
 
 	ret = handshake(password);
 	if (ret<0)
-		goto clean;
-	RPRINT("handshake OK\n");
+		goto end3;
+	PSPRINT("handshake OK\n");
 
-	initScreen();
 	ret = init();
 	if (ret<0)
-		goto clean;
-	RPRINT("Init OK\n");
+		goto end3;
+	PSPRINT("Init OK\n");
 
 	raw_pixel_data = (unsigned char *)malloc(
 		rfb_info.server_init_msg.framebuffer_width*
@@ -97,9 +130,9 @@ int main(int argc, const char* argv[])
 
 	if (raw_pixel_data == NULL)
 	{
-		RPRINT("unable to allocate raw_pixel_data array\n");
+		PSPRINT("unable to allocate raw_pixel_data array\n");
 		ret=-1;
-		goto clean;
+		goto end3;
 	}
 
 	old_raw_pixel_data = (unsigned char *)malloc(
@@ -109,17 +142,17 @@ int main(int argc, const char* argv[])
 
 	if (old_raw_pixel_data == NULL)
 	{
-		RPRINT("unable to allocate old_raw_pixel_data array\n");
+		PSPRINT("unable to allocate old_raw_pixel_data array\n");
 		ret=-1;
-		goto clean;
+		goto end3;
 	}
-
-	ret = sys_ppu_thread_create(&hmsg_id, handleMsgs, thread_arg,
+	ret = sysThreadCreate(&hmsg_id, handleMsgs, thread_arg,
 		priority, stack_size, THREAD_JOINABLE, handle_msg_name);
-	ret = sys_ppu_thread_create(&hie_id, handleInputEvents, thread_arg,
+	ret = sysThreadCreate(&hie_id, handleInputEvents, thread_arg,
 		priority, stack_size, THREAD_JOINABLE, handle_input_name);
-	ret = sys_ppu_thread_join(hie_id, &retval);
-	RPRINT("join thread hie_id\n");
+	
+	ret = sysThreadJoin(hie_id, &retval);
+	PSPRINT("join thread hie_id\n");
 	
 	if(raw_pixel_data!=NULL)
 		free(raw_pixel_data);
@@ -129,13 +162,17 @@ int main(int argc, const char* argv[])
 	if (rfb_info.server_name_string!=NULL)
 		free(rfb_info.server_name_string);
 
-clean:
+end3:
 	rfbClose();
-clean_rp:
-#ifdef VERBOSE
+#ifdef REMOTE_PRINT
+end2:
 	remotePrintClose();
 #endif
 end:
+#ifdef VERBOSE
+	PSTermDestroy(&psterm);
+#endif
+	closeDisplay();
 	netDeinitialize();
 	return ret;
 }
@@ -148,24 +185,24 @@ static int handshake(char * password)
 	ret = rfbGetProtocolVersion();
 	if (ret<0)
 	{
-		RPRINT("failed to get protocol version\n");
+		PSPRINT("failed to get protocol version\n");
 		goto end;
 	}
 	rfb_info.version = ret;
 	ret = rfbSendProtocolVersion(RFB_003_003);
 	if (ret<0)
 	{
-		RPRINT("failed to send protocol version\n");
+		PSPRINT("failed to send protocol version\n");
 		goto end;
 	}
 	ret = rfbGetSecurityType();
 	if (ret<0)
 	{
-		RPRINT("failed to get security type\n");
+		PSPRINT("failed to get security type\n");
 		goto end;
 	}
 	rfb_info.security_type=ret;
-	RPRINT("security type:%i\n", rfb_info.security_type);
+	PSPRINT("security type:%i\n", rfb_info.security_type);
 	switch(rfb_info.security_type)
 	{
 		case RFB_SEC_TYPE_VNC_AUTH:
@@ -173,14 +210,14 @@ static int handshake(char * password)
 			ret = authenticate(password);
 			if (ret!=RFB_SEC_RESULT_OK)
 			{
-				RPRINT("failed to authenticate, security result:%i\n", ret);
+				PSPRINT("failed to authenticate, security result:%i\n", ret);
 				ret = -1;
 			}
 			break;
 		case RFB_SEC_TYPE_NONE:
 			//switch to init phase
 			ret=0;
-			RPRINT("no authentication needed\n");
+			PSPRINT("no authentication needed\n");
 			break;	
 		case RFB_SEC_TYPE_INVALID: 
 			{
@@ -192,7 +229,7 @@ static int handshake(char * password)
 				reason = (char*)malloc(l+1);
 				if (reason == NULL)
 				{
-					RPRINT("failed to allocate %d bytes\n", l);
+					PSPRINT("failed to allocate %d bytes\n", l);
 					ret = -1;
 					goto end;
 				}
@@ -203,13 +240,13 @@ static int handshake(char * password)
 					goto end;
 				}
 				reason[l]='\0';
-				RPRINT("%s\n",reason);
+				PSPRINT("%s\n",reason);
 				free(reason);
 			}
 			ret = -1;
 			break;
 		default:
-			RPRINT("security type is not supported\n");
+			PSPRINT("security type is not supported\n");
 	}
 
 end:
@@ -238,13 +275,13 @@ static int init(void)
 	ret = rfbSendClientInit(RFB_NOT_SHARED);
 	if (ret<0)
 	{
-		RPRINT("failed to send client init msg\n");
+		PSPRINT("failed to send client init msg\n");
 		goto end;
 	}
 	ret =rfbGetServerInitMsg(&(rfb_info.server_init_msg));
 	if (ret<0)
 	{
-		RPRINT("failed to get server init msg\n");
+		PSPRINT("failed to get server init msg\n");
 		goto end;
 	}
 
@@ -255,7 +292,7 @@ static int init(void)
 		rfb_info.server_name_string = (char*)malloc(l+1);
 		if (rfb_info.server_name_string == NULL)
 		{
-			RPRINT("failed to allocate %d bytes\n", l+1);
+			PSPRINT("failed to allocate %d bytes\n", l+1);
 			ret = -1;
 			goto end;
 		}
@@ -266,23 +303,23 @@ static int init(void)
 			goto end;
 		}
 		rfb_info.server_name_string[l]='\0';
-		RPRINT("server name:%s\n",rfb_info.server_name_string);
+		PSPRINT("server name:%s\n",rfb_info.server_name_string);
 	}
 
-	RPRINT("framebuffer_width:%i\nframebuffer_height:%i\n",
+	PSPRINT("framebuffer_width:%i\nframebuffer_height:%i\n",
 		rfb_info.server_init_msg.framebuffer_width,
 		rfb_info.server_init_msg.framebuffer_height);
-	RPRINT("PIXEL FORMAT:\n");
-	RPRINT("bits_per_pixel:%i\ndepth:%i\nbig_endian_flag:%i\ntrue_colour_flag:%i\n",
+	PSPRINT("PIXEL FORMAT:\n");
+	PSPRINT("bits_per_pixel:%i\ndepth:%i\nbig_endian_flag:%i\ntrue_colour_flag:%i\n",
 		rfb_info.server_init_msg.pixel_format.bits_per_pixel,
 		rfb_info.server_init_msg.pixel_format.depth,
 		rfb_info.server_init_msg.pixel_format.big_endian_flag,
 		rfb_info.server_init_msg.pixel_format.true_colour_flag);
-	RPRINT("red_max:%i\ngreen_max:%i\nblue_max:%i\n",
+	PSPRINT("red_max:%i\ngreen_max:%i\nblue_max:%i\n",
 		rfb_info.server_init_msg.pixel_format.red_max,
 		rfb_info.server_init_msg.pixel_format.green_max,
 		rfb_info.server_init_msg.pixel_format.blue_max);
-	RPRINT("red_shift:%i\ngreen_shift:%i\nblue_shift:%i\n",
+	PSPRINT("red_shift:%i\ngreen_shift:%i\nblue_shift:%i\n",
 		rfb_info.server_init_msg.pixel_format.red_shift,
 		rfb_info.server_init_msg.pixel_format.green_shift,
 		rfb_info.server_init_msg.pixel_format.blue_shift);
@@ -292,7 +329,7 @@ static int init(void)
 	if (rfb_info.server_init_msg.framebuffer_width>res.width ||
 			rfb_info.server_init_msg.framebuffer_height>res.height)
 	{
-		RPRINT("cannot handle frame size: with=%i, height=%i\n",
+		PSPRINT("cannot handle frame size: with=%i, height=%i\n",
 			rfb_info.server_init_msg.framebuffer_width,
 			rfb_info.server_init_msg.framebuffer_height);
 		ret=-1;
@@ -312,7 +349,7 @@ static int init(void)
 	}
 	else
 	{
-		RPRINT("cannot handle bpp=%d, depth=%d\n",
+		PSPRINT("cannot handle bpp=%d, depth=%d\n",
 		rfb_info.server_init_msg.pixel_format.bits_per_pixel,
 		rfb_info.server_init_msg.pixel_format.depth);
 		ret=-1;
@@ -323,7 +360,7 @@ static int init(void)
 	// check colour mode
 	if (rfb_info.server_init_msg.pixel_format.true_colour_flag!=1)
 	{
-		RPRINT("cannot handle colour map\n");
+		PSPRINT("cannot handle colour map\n");
 		ret=-1;
 		goto end;
 	}
@@ -342,19 +379,33 @@ end:
 }
 
 // handle incoming msgs and render screen 
-static void handleMsgs(u64 arg)
+static void handleMsgs(void * arg)
 {
 	int i, ret;
+
+	RFB_FRAMEBUFFER_UPDATE_REQUEST * rfbur = (RFB_FRAMEBUFFER_UPDATE_REQUEST *)output_msg;
+	rfbur->incremental = 1;
+	rfbur->x_position = 0;
+	rfbur->y_position = 0;
+	rfbur->width = rfb_info.server_init_msg.framebuffer_width;
+	rfbur->height = rfb_info.server_init_msg.framebuffer_height;
+	ret = rfbSendMsg(RFB_FramebufferUpdateRequest, rfbur);
+	if (ret<0)
+		goto end;
+	frame_update_requested=1;
+	PSPRINT("requested initial framebuffer update\n");
+
 	while(!vnc_end) // main loop
 	{
 		//handle server msgs
-		RPRINT("waiting for server message\n");
 		ret = rfbGetMsg(input_msg);
 		if (ret<=0)
 		{
-			usleep(10000);
-			continue;
+				//PSPRINT("rfbGetMsg failed, retrying in 10 ms...\n");
+				usleep(10000);
+				continue;
 		}
+		
 		switch (input_msg[0])
 		{
 			case RFB_FramebufferUpdate:
@@ -367,25 +418,30 @@ static void handleMsgs(u64 arg)
 							goto end;
 					}
 					frame_update_requested=0;
-					//render screen
-					// FIXME big_endian_flag must be handled !
-					waitFlip();
-					if(draw_mode == DS_MODE_16BPP)
+					if (!display_in_progress)
 					{
-						draw16bppRectangleToScreen((unsigned short *)raw_pixel_data,
-						(unsigned int)rfb_info.server_init_msg.framebuffer_width,
-						(unsigned int)rfb_info.server_init_msg.framebuffer_height,
-						0, 0);
+						display_in_progress++;
+						//render screen
+						// FIXME big_endian_flag must be handled !
+						waitFlip();
+						if(draw_mode == DS_MODE_16BPP)
+						{
+							draw16bppRectangleToScreen((unsigned short *)raw_pixel_data,
+							(unsigned int)rfb_info.server_init_msg.framebuffer_width,
+							(unsigned int)rfb_info.server_init_msg.framebuffer_height,
+							0, 0);
+						}
+						else if (draw_mode == DS_MODE_32BPP)
+						{
+							draw32bppRectangleToScreen((unsigned int*)raw_pixel_data,
+							(unsigned int)rfb_info.server_init_msg.framebuffer_width,
+							(unsigned int)rfb_info.server_init_msg.framebuffer_height,
+							0, 0);
+						}
+						PSPRINT("render screen\n");
+						updateDisplay();
+						display_in_progress--;
 					}
-					else if (draw_mode == DS_MODE_32BPP)
-					{
-						draw32bppRectangleToScreen((unsigned int*)raw_pixel_data,
-						(unsigned int)rfb_info.server_init_msg.framebuffer_width,
-						(unsigned int)rfb_info.server_init_msg.framebuffer_height,
-						0, 0);
-					}
-					RPRINT("render screen\n");
-					updateScreen();
 
 					if (!frame_update_requested)
 					{
@@ -400,7 +456,7 @@ static void handleMsgs(u64 arg)
 						ret = rfbSendMsg(RFB_FramebufferUpdateRequest, rfbur);
 						if (ret<0)
 							goto end;
-						RPRINT("requested framebuffer update after rendering screen\n");
+						PSPRINT("requested framebuffer update after rendering screen\n");
 					}
 
 					memcpy(old_raw_pixel_data, raw_pixel_data, 
@@ -419,7 +475,7 @@ static void handleMsgs(u64 arg)
 					text = (char*)malloc(rsct->length+1);
 					if (text==NULL)
 					{
-						RPRINT("cannot allocate %u bytes to get cut text buffer\n", rsct->length);
+						PSPRINT("cannot allocate %u bytes to get cut text buffer\n", rsct->length);
 						ret=-1;
 						goto end;
 					}
@@ -435,16 +491,15 @@ static void handleMsgs(u64 arg)
 				break;
 			case RFB_SetColourMapEntries:
 			default:
-				RPRINT("cannot handle msg type:%d\n", input_msg[0]);
+				PSPRINT("cannot handle msg type:%d\n", input_msg[0]);
 				ret=-1;
 				goto end;
 		}
 	} // end main loop
 
 end:
-	sys_ppu_thread_exit(0);
 	vnc_end=1;
-	return;
+	sysThreadExit(0);
 }
 
 static unsigned short convertKeyCode(unsigned short keycode)
@@ -489,7 +544,7 @@ static unsigned short convertKeyCode(unsigned short keycode)
 }
 
 //handle joystick events
-static void handleInputEvents(u64 arg)
+static void handleInputEvents(void * arg)
 {
 	KbInfo kbinfo;
 	KbData kbdata;
@@ -500,20 +555,22 @@ static void handleInputEvents(u64 arg)
 	int i, j, k, ret=0;
 #ifdef PAD_ENABLED
 	int pad_event=0;
-	PadInfo padinfo;
-	PadData paddata;
+	padInfo padinfo;
+	padData paddata;
 #endif
 #ifdef MOUSE_ENABLED
 	int mouse_event=0;
-	MouseInfo mouseinfo;
-	MouseData mousedata;
+	mouseInfo mouseinfo;
+	mouseData mousedata;
 #endif
 	int buttons_state=0;
 	int x=0;
 	int y=0;
 	int request_frame_update=0;
 
-	RPRINT("handle input events\n");
+	unsigned char btn_cross_pressed=0;
+
+	PSPRINT("handle input events\n");
 	
 	ioKbInit(MAX_KB_PORT_NUM);
 #ifdef PAD_ENABLED	
@@ -557,7 +614,7 @@ static void handleInputEvents(u64 arg)
 					continue;
 				
 				request_frame_update=1;
-				RPRINT("key pressed! code[%d]=%x\n", j, kbdata.keycode[j]);
+				PSPRINT("key pressed! code[%d]=%x\n", j, kbdata.keycode[j]);
 				RFB_KEY_EVENT * rke = (RFB_KEY_EVENT *)output_msg;
 				rke->down_flag = 1;
 				rke->key = (unsigned int)convertKeyCode(kbdata.keycode[j]);
@@ -575,7 +632,7 @@ static void handleInputEvents(u64 arg)
 					{
 						if (keycode[k]==0)
 						{
-							RPRINT("add key %x in keycode[%d]\n", kbdata.keycode[j], k);
+							PSPRINT("add key %x in keycode[%d]\n", kbdata.keycode[j], k);
 							keycode[k]=kbdata.keycode[j];
 							keycode_updated=1;	
 							break;
@@ -605,7 +662,7 @@ static void handleInputEvents(u64 arg)
 				{
 					// key released
 					request_frame_update=1;
-					RPRINT("key released! code[%d]=%x\n", j, keycode[k]);
+					PSPRINT("key released! code[%d]=%x\n", j, keycode[k]);
 					RFB_KEY_EVENT * rke = (RFB_KEY_EVENT *)output_msg;
 					rke->down_flag = 0;
 					rke->key = (unsigned int)convertKeyCode(keycode[k]);
@@ -631,9 +688,21 @@ static void handleInputEvents(u64 arg)
 			if(padinfo.status[i])
 			{
 				ioPadGetData(i, &paddata);
+				if(paddata.BTN_CROSS)
+				{
+					btn_cross_pressed=1;
+				}
+				else
+				{
+					if (btn_cross_pressed)
+					{
+						psprint_on=!psprint_on;
+						btn_cross_pressed=0;
+					}
+				}
 				if(paddata.BTN_TRIANGLE)
 				{
-					RPRINT("exit on user request\n");
+					PSPRINT("exit on user request\n");
 					vnc_end=1;
 				}
 
@@ -736,7 +805,7 @@ static void handleInputEvents(u64 arg)
 					break;	
 				}
 				
-				/*RPRINT("MouseDATA buttons:%u, x_axis:%i, y_axis:%i, wheel:%i, tilt:%i\n",
+				/*PSPRINT("MouseDATA buttons:%u, x_axis:%i, y_axis:%i, wheel:%i, tilt:%i\n",
 					mousedata.buttons,
 					mousedata.x_axis,
 					mousedata.y_axis,
@@ -746,7 +815,7 @@ static void handleInputEvents(u64 arg)
 				
 				if (mousedata.buttons==4)
 				{
-					RPRINT("exit on user request\n");
+					PSPRINT("exit on user request\n");
 					vnc_end=1;
 				}
 
@@ -841,9 +910,9 @@ static void handleInputEvents(u64 arg)
 			ret = rfbSendMsg(RFB_FramebufferUpdateRequest, rfbur);
 			if (ret<0)
 				goto end;
-			RPRINT("requested framebuffer update due to input event\n");
+			PSPRINT("requested framebuffer update due to input event\n");
 		}
-		usleep(2500);
+		usleep(2000);
 	}
 end:
 	ioKbEnd();
@@ -853,8 +922,7 @@ end:
 #ifdef MOUSE_ENABLED
 	ioMouseEnd();
 #endif
-	sys_ppu_thread_exit(0);
-	return;
+	sysThreadExit(0);
 }
 
 static int handleRectangle(void)
@@ -867,7 +935,7 @@ static int handleRectangle(void)
 	if (ret<0)
 		goto end;
 
-	RPRINT("update rectangle\nx_position:%d\ny_position:%d\nwidth:%d\nheight:%d\nencoding_type:%d\n",
+	PSPRINT("update rectangle\nx_position:%d\ny_position:%d\nwidth:%d\nheight:%d\nencoding_type:%d\n",
 		rfbur.x_position,
 		rfbur.y_position,
 		rfbur.width,
@@ -890,7 +958,7 @@ static int handleRectangle(void)
 					ret = rfbGetBytes(dest, bpw);
 					if (ret<0)
 					{
-						RPRINT("failed to get line of %d pixels\n", bpw);
+						PSPRINT("failed to get line of %d pixels\n", bpw);
 						goto end;
 					}
 					dest+=rfb_bpw;
@@ -907,7 +975,7 @@ static int handleRectangle(void)
 				ret = rfbGetBytes((unsigned char *)&rci, sizeof(RFB_COPYRECT_INFO));
 				if (ret<0)
 				{
-					RPRINT("failed to get RFB_COPYRECT_INFO\n");
+					PSPRINT("failed to get RFB_COPYRECT_INFO\n");
 					goto end;
 				}
 				
@@ -928,7 +996,7 @@ static int handleRectangle(void)
 			}
 			break;
 		default:
-			RPRINT("unsupported encoding type:%d\n", rfbur.encoding_type);
+			PSPRINT("unsupported encoding type:%d\n", rfbur.encoding_type);
 			ret = -1;
 			goto end;
 	}
@@ -954,7 +1022,7 @@ static int HandleRRERectangles(const RFB_FRAMEBUFFER_UPDATE_RECTANGLE * rfbur,
 	ret = rfbGetBytes(header, 4 + bpp);
 	if (ret<0)
 	{
-		RPRINT("RFB_RRE, failed to get header\n");
+		PSPRINT("RFB_RRE, failed to get header\n");
 		goto end;
 	}
 	
@@ -963,7 +1031,7 @@ static int HandleRRERectangles(const RFB_FRAMEBUFFER_UPDATE_RECTANGLE * rfbur,
 
 	dest = raw_pixel_data + rfbur->y_position*rfb_bpw + rfbur->x_position*bpp;
 
-	RPRINT("RRE: %u sub-rectangles to draw\n", nb_sub_rectangles);
+	PSPRINT("RRE: %u sub-rectangles to draw\n", nb_sub_rectangles);
 
 	switch (bpp)
 	{
@@ -993,7 +1061,7 @@ static int HandleRRERectangles(const RFB_FRAMEBUFFER_UPDATE_RECTANGLE * rfbur,
 					int vrest_width = rfbur->width%8;
 					int vres_width = rfb_info.server_init_msg.framebuffer_width/8;
 
-					RPRINT("use altivec to draw background color [%x]\n", bg_pixel_value);
+					PSPRINT("use altivec to draw background color [%x]\n", bg_pixel_value);
 					for (h=0;h<rfbur->height;h++)
 					{
 						for(w=0;w<v_width;w++)
@@ -1036,7 +1104,7 @@ static int HandleRRERectangles(const RFB_FRAMEBUFFER_UPDATE_RECTANGLE * rfbur,
 					ret = rfbGetBytes(subrect_info, 8 + bpp);
 					if (ret<0)
 					{
-						RPRINT("RFB_RRE, failed to get sub rect info\n");
+						PSPRINT("RFB_RRE, failed to get sub rect info\n");
 						goto end;
 					}
 
@@ -1082,7 +1150,7 @@ static int HandleRRERectangles(const RFB_FRAMEBUFFER_UPDATE_RECTANGLE * rfbur,
 					ret = rfbGetBytes(subrect_info, 8 + bpp);
 					if (ret<0)
 					{
-						RPRINT("RFB_RRE, failed to get sub rect info\n");
+						PSPRINT("RFB_RRE, failed to get sub rect info\n");
 						goto end;
 					}
 
@@ -1105,11 +1173,38 @@ static int HandleRRERectangles(const RFB_FRAMEBUFFER_UPDATE_RECTANGLE * rfbur,
 			break;
 
 		default:
-			RPRINT("RFB_RRE, invalid bpp\n");
+			PSPRINT("RFB_RRE, invalid bpp\n");
 			goto end;
 	}
 
 end:
 	return ret;
 
-}				
+}
+
+static void pstermRefresh(void * arg)
+{
+	while(!vnc_end)
+	{
+		usleep(50000);
+		if (!psprint_on)
+			continue;
+
+		if(!display_in_progress)
+		{
+			display_in_progress++;
+
+			PSTermDraw (&psterm);
+			waitFlip();
+			draw32bppRectangleToScreen(
+						(unsigned int*)psterm.pixel_buf,
+						(unsigned int)psterm.pixel_width,
+						(unsigned int)psterm.pixel_height,
+						0, 0);
+			updateDisplay();
+
+			display_in_progress--;
+		}
+	}
+	sysThreadExit(0);
+}

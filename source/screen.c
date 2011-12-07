@@ -1,85 +1,31 @@
 /* Now double buffered with animation.
- */ 
-#include <psl1ght/lv2.h>
+ */
+
+#include <ppu-lv2.h>
+ 
 #include <malloc.h>
 #include <string.h>
-#include <assert.h>
 #include <unistd.h>
+
 #include <sysutil/video.h>
-#include <rsx/gcm.h>
-#include <rsx/reality.h>
+#include <rsx/gcm_sys.h>
+#include <rsx/rsx.h>
+#include "rsxutil.h"
 
 #include <altivec.h>
 
+#include "rsxutil.h"
 #include "screen.h"
-#include "remoteprint.h"
+#include "psprint.h"
 
-gcmContextData *context; // Context to keep track of the RSX buffer.
-VideoResolution res; // Screen Resolution
+#define MAX_BUFFERS 2
+
+gcmContextData *context;
+void *host_addr = NULL;
+rsxBuffer frame_buffers[MAX_BUFFERS];
 int current_frame_buffer = 0;
-u32 *frame_buffers[2]; // The buffer we will be drawing into.
+DisplayResolution res;
 
-void waitFlip(void)
-{ // Block the PPU thread untill the previous flip operation has finished.
-	while(gcmGetFlipStatus() != 0) 
-		usleep(200);
-	gcmResetFlipStatus();
-}
-
-static void flip(s32 frame_buffer)
-{
-	assert(gcmSetFlip(context, frame_buffer) == 0);
-	realityFlushBuffer(context);
-	gcmSetWaitFlip(context); // Prevent the RSX from continuing until the flip has finished.
-}
-
-// Initilize everything. You can probally skip over this function.
-void initScreen()
-{
-	// Allocate a 1Mb buffer, alligned to a 1Mb boundary to be our shared IO memory with the RSX.
-	void *host_addr = memalign(1024*1024, 1024*1024);
-	assert(host_addr != NULL);
-
-	// Initilise Reality, which sets up the command buffer and shared IO memory
-	context = realityInit(0x10000, 1024*1024, host_addr); 
-	assert(context != NULL);
-
-	VideoState state;
-	assert(videoGetState(0, 0, &state) == 0); // Get the state of the display
-	assert(state.state == 0); // Make sure display is enabled
-
-	// Get the current resolution
-	assert(videoGetResolution(state.displayMode.resolution, &res) == 0);
-	
-	// Configure the buffer format to xRGB
-	VideoConfiguration vconfig;
-	memset(&vconfig, 0, sizeof(VideoConfiguration));
-	vconfig.resolution = state.displayMode.resolution;
-	vconfig.format = VIDEO_BUFFER_FORMAT_XRGB;
-	vconfig.pitch = res.width * 4;
-	vconfig.aspect=state.displayMode.aspect;
-
-	assert(videoConfigure(0, &vconfig, NULL, 0) == 0);
-	assert(videoGetState(0, 0, &state) == 0); 
-
-	s32 frame_buffers_size = 4 * res.width * res.height; // each pixel is 4 bytes
-	gcmSetFlipMode(GCM_FLIP_VSYNC); // Wait for VSYNC to flip
-
-	// Allocate two buffers for the RSX to draw to the screen (double buffering)
-	frame_buffers[0] = rsxMemAlign(16, frame_buffers_size);
-	frame_buffers[1] = rsxMemAlign(16, frame_buffers_size);
-	assert(frame_buffers[0] != NULL && frame_buffers[1] != NULL);
-
-	u32 offset[2];
-	assert(realityAddressToOffset(frame_buffers[0], &offset[0]) == 0);
-	assert(realityAddressToOffset(frame_buffers[1], &offset[1]) == 0);
-	// Setup the display buffers
-	assert(gcmSetDisplayBuffer(0, offset[0], res.width * 4, res.width, res.height) == 0);
-	assert(gcmSetDisplayBuffer(1, offset[1], res.width * 4, res.width, res.height) == 0);
-
-	gcmResetFlipStatus();
-	flip(1);
-}
 //assuming input buffer type is XRGD - 16bpp
 int draw16bppRectangleToScreen(unsigned short *buffer,
 		unsigned int width,
@@ -112,8 +58,8 @@ int draw16bppRectangleToScreen(unsigned short *buffer,
 	unsigned int vrest_src_width;
 	unsigned int v_dest_width;
 
-	RPRINT("draw 16bpp rectangle\n(%d,%d) @ (%d,%d)\n", width, height, x, y);
-	RPRINT("screen size = (%d,%d)\n", res.width, res.height);
+	//PSPRINT("draw 16bpp rectangle\n(%d,%d) @ (%d,%d)\n", width, height, x, y);
+	//PSPRINT("screen size = (%d,%d)\n", res.width, res.height);
 
 	if (x+width>res.width || y+height>res.height)
 	{
@@ -125,7 +71,7 @@ int draw16bppRectangleToScreen(unsigned short *buffer,
 	{
 		// use vectorized instructions to copy rectangle
 		vc_src = (vector unsigned char *)buffer;
-		vi_dest = (vector unsigned int *)(frame_buffers[current_frame_buffer]+y*res.width+x);
+		vi_dest = (vector unsigned int *)(frame_buffers[current_frame_buffer].ptr+y*res.width+x);
 		v_dest_width = res.width/4; 
 		
 		for(h = 0; h < height; h++)
@@ -147,25 +93,33 @@ int draw16bppRectangleToScreen(unsigned short *buffer,
 
 				vc_tmp1 = vec_mergeh(vc_0, vc_red);
 				vc_tmp2 = vec_mergeh(vc_green, vc_blue);
-				vi_dest[wd]   = (vector unsigned int)vec_mergeh((vector unsigned short)vc_tmp1, (vector unsigned short)vc_tmp2); // got 4 32bpp pixels !
-				vi_dest[wd+1] = (vector unsigned int)vec_mergel((vector unsigned short)vc_tmp1, (vector unsigned short)vc_tmp2); // got 4 32bpp pixels !
+				vi_dest[wd]   = (vector unsigned int)vec_mergeh(
+								(vector unsigned short)vc_tmp1, 
+								(vector unsigned short)vc_tmp2); // got 4 32bpp pixels !
+				vi_dest[wd+1] = (vector unsigned int)vec_mergel(
+								(vector unsigned short)vc_tmp1,
+								(vector unsigned short)vc_tmp2); // got 4 32bpp pixels !
 
 				vc_tmp1 = vec_mergel(vc_0, vc_red);
 				vc_tmp2 = vec_mergel(vc_green, vc_blue);
-				vi_dest[wd+2] = (vector unsigned int)vec_mergeh((vector unsigned short)vc_tmp1, (vector unsigned short)vc_tmp2); // got 4 32bpp pixels !
-				vi_dest[wd+3] = (vector unsigned int)vec_mergel((vector unsigned short)vc_tmp1, (vector unsigned short)vc_tmp2); // got 4 32bpp pixels !
+				vi_dest[wd+2] = (vector unsigned int)vec_mergeh(
+								(vector unsigned short)vc_tmp1,
+								(vector unsigned short)vc_tmp2); // got 4 32bpp pixels !
+				vi_dest[wd+3] = (vector unsigned int)vec_mergel(
+								(vector unsigned short)vc_tmp1,
+								(vector unsigned short)vc_tmp2); // got 4 32bpp pixels !
 			}
 			vc_src  += v_src_width;
 			vi_dest += v_dest_width;
 		}
-		RPRINT("end of vectorized copy\n");
+		//PSPRINT("end of vectorized copy\n");
 	}
 	
 	vrest_src_width = width%8;
 	if (vrest_src_width!=0)
 	{
 		src = buffer + v_src_width*8;
-		dest = frame_buffers[current_frame_buffer] + y*res.width+x + v_src_width*8;
+		dest = frame_buffers[current_frame_buffer].ptr + y*res.width+x + v_src_width*8;
 		for(h = 0; h < height; h++)
 		{
 			for(w = 0; w < width; w++)
@@ -181,7 +135,7 @@ int draw16bppRectangleToScreen(unsigned short *buffer,
 			src+=width;
 			dest+=res.width;
 		}
-		RPRINT("end of scalar copy\n");
+		//PSPRINT("end of scalar copy\n");
 	}
 	return 0;
 }
@@ -206,8 +160,8 @@ int draw32bppRectangleToScreen(unsigned int *buffer,
 	unsigned int vrest_src_width;
 	unsigned int v_dest_width;
 
-	RPRINT("draw 32bpp rectangle\n(%d,%d) @ (%d,%d)\n", width, height, x, y);
-	RPRINT("screen size = (%d,%d)\n", res.width, res.height);
+	//PSPRINT("draw 32bpp rectangle\n(%d,%d) @ (%d,%d)\n", width, height, x, y);
+	//PSPRINT("screen size = (%d,%d)\n", res.width, res.height);
 
 	if (x+width>res.width || y+height>res.height)
 	{
@@ -219,7 +173,7 @@ int draw32bppRectangleToScreen(unsigned int *buffer,
 	{
 		// use vectorized instructions to copy rectangle
 		vi_src = (vector unsigned int *)buffer;
-		vi_dest = (vector unsigned int *)(frame_buffers[current_frame_buffer]+y*res.width+x);
+		vi_dest = (vector unsigned int *)(frame_buffers[current_frame_buffer].ptr+y*res.width+x);
 		vi_8 = vec_splat_u32(8);
 		v_dest_width = res.width/4; // handle 16 pixels per loop => 4 vectors of 4 pixels each
 		
@@ -233,13 +187,13 @@ int draw32bppRectangleToScreen(unsigned int *buffer,
 			vi_src  += v_src_width;
 			vi_dest += v_dest_width;
 		}
-		RPRINT("end of vectorized copy\n");
+		//PSPRINT("end of vectorized copy\n");
 	}
 	vrest_src_width = width%4;
 	if (vrest_src_width!=0)
 	{
 		src = buffer + v_src_width*4;
-		dest = frame_buffers[current_frame_buffer] + y*res.width+x + v_src_width*4;
+		dest = frame_buffers[current_frame_buffer].ptr + y*res.width+x + v_src_width*4;
 		for(h = 0; h < height; h++)
 		{
 			for(w = 0; w < vrest_src_width; w++)
@@ -250,31 +204,43 @@ int draw32bppRectangleToScreen(unsigned int *buffer,
 			src+=width;
 			dest+=res.width;
 		}
-		RPRINT("end of scalar copy\n");
+		//PSPRINT("end of scalar copy\n");
 	}
 
 	return 0;
 }
 
-void updateScreen(void)
+void initDisplay()
 {
-	flip(current_frame_buffer); // Flip buffer onto screen
-	current_frame_buffer = !current_frame_buffer;
+	int i=0;
+
+ /* Allocate a 1Mb buffer, alligned to a 1Mb boundary
+  * to be our shared IO memory with the RSX. */
+	host_addr = memalign (1024*1024, HOST_SIZE);
+	context = initScreen (host_addr, HOST_SIZE);
+
+  getResolution(&(res.width), &(res.height));
+  for (i = 0; i < MAX_BUFFERS; i++)
+    makeBuffer( &frame_buffers[i], res.width, res.height, i);
+  flip(context, MAX_BUFFERS - 1);
+
+
+}
+void closeDisplay()
+{
+	int i;
+  gcmSetWaitFlip(context);
+  for (i = 0; i < MAX_BUFFERS; i++)
+    rsxFree(frame_buffers[i].ptr);
+  rsxFinish(context, 1);
+  free(host_addr);
 }
 
-unsigned int * getCurrentFrameBuffer(void)
+void updateDisplay(void)
 {
-	return frame_buffers[current_frame_buffer];
-}
-unsigned int * getOldFrameBuffer(void)
-{
-	return frame_buffers[!current_frame_buffer];
-}
-unsigned int getScreenWidth(void)
-{
-	return res.width;
-}
-unsigned int getScreenHeight(void)
-{
-	return res.height;
+	flip(context, frame_buffers[current_frame_buffer].id); // Flip buffer onto screen
+	current_frame_buffer++;
+	if (current_frame_buffer >= MAX_BUFFERS)
+      current_frame_buffer = 0;
+
 }

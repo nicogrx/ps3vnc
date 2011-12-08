@@ -2,6 +2,8 @@
 #include <string.h>
 #include <net/net.h>
 #include <sys/thread.h>
+#include <sys/mutex.h>
+
 #ifdef PAD_ENABLED
 #include <io/pad.h>
 #endif
@@ -45,30 +47,32 @@ unsigned char draw_mode;
 volatile int frame_update_requested;
 
 unsigned int psprint_on;
-unsigned int display_in_progress;
+//unsigned int display_in_progress;
+sys_mutex_t display_mutex;
+sys_mutex_attr_t display_mutex_attr;
 
 int main(int argc, const char* argv[])
 {
 	int port, ret=0;
-	//const char ip[] = "192.168.1.21";
 	const char ip[] = "192.168.1.32";
 	char password[] = "nicogrx";
-
 	u64 retval;
 	sys_ppu_thread_t hie_id, hmsg_id;
 	u64 priority = 1500;
+	void *thread_arg = (void*)0x1337;
 	size_t stack_size = 0x1000;
 	char *handle_input_name = "Handle input events";
 	char *handle_msg_name = "Handle message";
-#ifdef VERBOSE
 	char *psterm_refresh_name = "PSTerm refresh";
 	sys_ppu_thread_t psterm_refresh_id;
-#endif
-	void *thread_arg = (void*)0x1337;
-	
-	frame_update_requested=0;
-	display_in_progress=0;
+	psfont.char_width=8;
+	psfont.char_height=16;
+	psterm.width=80;
+	psterm.height=65;
+	psterm.bg_color=0x00;
+	psterm.fg_color=0xFFFFFF00;
 	psprint_on=0;
+	frame_update_requested=0;
 
 	ret = netInitialize();
 	if (ret < 0)
@@ -76,25 +80,26 @@ int main(int argc, const char* argv[])
 	
 	initDisplay();
 
-#ifdef VERBOSE
-	psfont.char_width=8;
-	psfont.char_height=16;
-	psterm.width=40;
-	psterm.height=65;
-	psterm.bg_color=0x00;
-	psterm.fg_color=0xFFFFFF00;
-	ret = PSTermInit(&psterm, &psfont);
-	if (ret<0)
-		goto end;
 #ifdef REMOTE_PRINT
 	ret = remotePrintConnect(ip);
 	if (ret<0)
-		goto end2;
+		goto end0;
 #endif
-
+  
+	memset(&display_mutex_attr, 0, sizeof(sys_mutex_attr_t));
+  display_mutex_attr.attr_protocol  = SYS_MUTEX_PROTOCOL_PRIO;
+  display_mutex_attr.attr_recursive = SYS_MUTEX_ATTR_NOT_RECURSIVE;
+  display_mutex_attr.attr_pshared   = SYS_MUTEX_ATTR_PSHARED;
+  display_mutex_attr.attr_adaptive  = SYS_MUTEX_ATTR_NOT_ADAPTIVE;
+	ret = sysMutexCreate(&display_mutex,&display_mutex_attr);
+	if (ret!=0)
+		goto end1;
+	
+	ret = PSTermInit(&psterm, &psfont);
+	if (ret<0)
+		goto end2;
 	ret = sysThreadCreate(&psterm_refresh_id, pstermRefresh, thread_arg,
 		priority, stack_size, THREAD_JOINABLE, psterm_refresh_name);
-#endif
 
 	PSPRINT("start PS3 Vnc viewer\n");
 
@@ -115,12 +120,12 @@ int main(int argc, const char* argv[])
 
 	ret = handshake(password);
 	if (ret<0)
-		goto end3;
+		goto end4;
 	PSPRINT("handshake OK\n");
 
 	ret = init();
 	if (ret<0)
-		goto end3;
+		goto end4;
 	PSPRINT("Init OK\n");
 
 	raw_pixel_data = (unsigned char *)malloc(
@@ -132,7 +137,7 @@ int main(int argc, const char* argv[])
 	{
 		PSPRINT("unable to allocate raw_pixel_data array\n");
 		ret=-1;
-		goto end3;
+		goto end4;
 	}
 
 	old_raw_pixel_data = (unsigned char *)malloc(
@@ -144,7 +149,7 @@ int main(int argc, const char* argv[])
 	{
 		PSPRINT("unable to allocate old_raw_pixel_data array\n");
 		ret=-1;
-		goto end3;
+		goto end4;
 	}
 	ret = sysThreadCreate(&hmsg_id, handleMsgs, thread_arg,
 		priority, stack_size, THREAD_JOINABLE, handle_msg_name);
@@ -162,15 +167,16 @@ int main(int argc, const char* argv[])
 	if (rfb_info.server_name_string!=NULL)
 		free(rfb_info.server_name_string);
 
-end3:
+end4:
 	rfbClose();
-#ifdef REMOTE_PRINT
-end2:
-	remotePrintClose();
-#endif
-end:
-#ifdef VERBOSE
+end3:
 	PSTermDestroy(&psterm);
+end2:
+	sysMutexDestroy(display_mutex);
+end1:
+#ifdef REMOTE_PRINT
+	remotePrintClose();
+end0:
 #endif
 	closeDisplay();
 	netDeinitialize();
@@ -418,9 +424,8 @@ static void handleMsgs(void * arg)
 							goto end;
 					}
 					frame_update_requested=0;
-					if (!display_in_progress)
+					if (sysMutexLock(display_mutex, 10000)==0)
 					{
-						display_in_progress++;
 						//render screen
 						// FIXME big_endian_flag must be handled !
 						waitFlip();
@@ -440,7 +445,8 @@ static void handleMsgs(void * arg)
 						}
 						PSPRINT("render screen\n");
 						updateDisplay();
-						display_in_progress--;
+					
+						sysMutexUnlock(display_mutex);
 					}
 
 					if (!frame_update_requested)
@@ -1186,14 +1192,12 @@ static void pstermRefresh(void * arg)
 {
 	while(!vnc_end)
 	{
-		usleep(50000);
+		usleep(100000);
 		if (!psprint_on)
 			continue;
 
-		if(!display_in_progress)
+		if(sysMutexLock(display_mutex, 0)==0)
 		{
-			display_in_progress++;
-
 			PSTermDraw (&psterm);
 			waitFlip();
 			draw32bppRectangleToScreen(
@@ -1202,8 +1206,8 @@ static void pstermRefresh(void * arg)
 						(unsigned int)psterm.pixel_height,
 						0, 0);
 			updateDisplay();
-
-			display_in_progress--;
+			
+			sysMutexUnlock(display_mutex);
 		}
 	}
 	sysThreadExit(0);

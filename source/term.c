@@ -96,7 +96,7 @@ static char* findStartCharToDraw(PSTerm * psterm)
 
 	char * last_char = psterm->char_buf+strlen(psterm->char_buf)-1;
 
-	while (l<psterm->height && last_char>psterm->char_buf)
+	while ( l<psterm->height && (last_char > psterm->char_buf) )
 	{
 		if (*last_char=='\n' || (chars_in_a_line==psterm->width))
 		{
@@ -134,6 +134,12 @@ void PSTermDraw (PSTerm * psterm)
 		}
 		else
 		{
+			if (curX+psterm->font->char_width == psterm->pixel_width)
+			{
+				curX = 0;
+				curY += psterm->font->char_height;
+			}
+
 			if(c < 32 || c >132)
 				c = 180;
 

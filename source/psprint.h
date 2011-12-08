@@ -2,8 +2,13 @@
 #include "term.h"
 
 #ifdef VERBOSE
-//#define PSPRINT remotePrint
+
+#ifdef REMOTE_PRINT
+#define PSPRINT remotePrint
+#else
 #define PSPRINT PSPrint
+#endif
+
 #else
 #define PSPRINT (void)
 #endif

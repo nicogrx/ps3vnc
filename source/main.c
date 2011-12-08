@@ -31,6 +31,9 @@ static int authenticate(char * password);
 static int init(void);
 static unsigned short convertKeyCode(unsigned short keycode);
 static void handleInputEvents(void * arg);
+#ifdef PAD_ENABLED
+static void	vibratePad(void);
+#endif
 static void handleMsgs(void * arg);
 static int handleRectangle(void);
 static int HandleRRERectangles(const RFB_FRAMEBUFFER_UPDATE_RECTANGLE *, int, int, int);
@@ -54,7 +57,8 @@ sys_mutex_attr_t display_mutex_attr;
 int main(int argc, const char* argv[])
 {
 	int port, ret=0;
-	const char ip[] = "192.168.1.32";
+	const char ip[] = "192.168.1.4";
+	//const char ip[] = "192.168.1.5";
 	char password[] = "nicogrx";
 	u64 retval;
 	sys_ppu_thread_t hie_id, hmsg_id;
@@ -71,7 +75,7 @@ int main(int argc, const char* argv[])
 	psterm.height=65;
 	psterm.bg_color=0x00;
 	psterm.fg_color=0xFFFFFF00;
-	psprint_on=0;
+	psprint_on=1;
 	frame_update_requested=0;
 
 	ret = netInitialize();
@@ -103,7 +107,7 @@ int main(int argc, const char* argv[])
 
 	PSPRINT("start PS3 Vnc viewer\n");
 
-	for(port=5901;port<5930;port++)
+	for(port=5900;port<5930;port++)
 	{
 		ret = rfbConnect(ip,port);
 		if (ret>=0)
@@ -473,6 +477,9 @@ static void handleMsgs(void * arg)
 				}		
 				break;
 			case RFB_Bell:
+#ifdef PAD_ENABLED			
+				vibratePad();
+#endif
 				break;
 			case RFB_ServerCutText:
 				{
@@ -694,7 +701,7 @@ static void handleInputEvents(void * arg)
 			if(padinfo.status[i])
 			{
 				ioPadGetData(i, &paddata);
-				if(paddata.BTN_CROSS)
+				if(paddata.BTN_R3)
 				{
 					btn_cross_pressed=1;
 				}
@@ -706,13 +713,13 @@ static void handleInputEvents(void * arg)
 						btn_cross_pressed=0;
 					}
 				}
-				if(paddata.BTN_TRIANGLE)
+				if(paddata.BTN_L3)
 				{
 					PSPRINT("exit on user request\n");
 					vnc_end=1;
 				}
 
-				if (paddata.BTN_SQUARE)
+				if (paddata.BTN_CROSS)
 				{
 					pad_event = 1;
 					buttons_state |= M_LEFT;
@@ -734,7 +741,7 @@ static void handleInputEvents(void * arg)
 					buttons_state &= ~M_RIGHT;
 				}
 
-				if (paddata.BTN_L1)
+				if (paddata.BTN_R1)
 				{
 					pad_event = 1;
 					buttons_state |= M_WHEEL_DOWN;
@@ -745,7 +752,7 @@ static void handleInputEvents(void * arg)
 					buttons_state &= ~M_WHEEL_DOWN;
 				}
 
-				if (paddata.BTN_R1)
+				if (paddata.BTN_L1)
 				{
 					pad_event = 1;
 					buttons_state |= M_WHEEL_UP;
@@ -930,6 +937,19 @@ end:
 #endif
 	sysThreadExit(0);
 }
+
+#ifdef PAD_ENABLED
+static void	vibratePad(void)
+{
+	padActParam actparam;
+	actparam.small_motor = 1;
+	actparam.large_motor = 0;
+	ioPadSetActDirect(0, &actparam);
+	usleep(500000);
+	actparam.small_motor = 0;
+	ioPadSetActDirect(0, &actparam);
+}
+#endif
 
 static int handleRectangle(void)
 {

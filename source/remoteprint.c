@@ -4,13 +4,13 @@
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
-#include <time.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <net/net.h>
 #include <arpa/inet.h>
 
 #include "remoteprint.h"
+#include "tick.h"
 
 #define PORT	5899
 
@@ -46,18 +46,15 @@ void remotePrint(const char * fmt, ...)
 {
 	va_list ap;
 	char buffer[128];
-#if 0
-	time_t t;
 	memset(buffer, 0, sizeof(buffer));
-	t = time(NULL);
-	sprintf(buffer, "%lu: ", t);
+	sprintf(buffer, "ticks=%u > ", getTicks());
 	send(rp_sock, buffer, strlen(buffer), 0);
-#endif
 	memset(buffer, 0, sizeof(buffer));
 	va_start(ap, fmt);
 	vsnprintf(buffer, sizeof(buffer)-1, fmt, ap);
 	va_end(ap);
 	send(rp_sock, buffer, strlen(buffer), 0);
+
 }
 
 int remoteSendBytes(unsigned char * bytes, int size)

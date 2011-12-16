@@ -33,7 +33,7 @@ CONTENTID	:=	UP0001-$(APPID)_00-0000000000000000
 # options for code generation
 #---------------------------------------------------------------------------------
 
-CFLAGS		=	-O2 -Wall -mcpu=cell $(MACHDEP) $(INCLUDE) -UREMOTE_PRINT -DVERBOSE -DPAD_ENABLED -DMOUSE_ENABLED
+CFLAGS		=	-O2 -Wall -mcpu=cell $(MACHDEP) $(INCLUDE) -UREMOTE_PRINT -DPAD_ENABLED -DMOUSE_ENABLED
 
 CXXFLAGS	=	$(CFLAGS)
 

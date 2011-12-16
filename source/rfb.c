@@ -72,7 +72,7 @@ int rfbGetBytes(unsigned char * bytes, int size)
 	if (ret>=0)
 	{
 		ret = size;
-		//PSPRINT("received %d bytes\n", size);
+		//RPRINT("received %d bytes\n", size);
 	}
 	return ret;
 }
@@ -83,7 +83,7 @@ int rfbSendBytes(unsigned char * bytes, int size)
 	int bytes_to_write=size;
 	unsigned char * start;
 	
-//PSPRINT("%d bytes to send\n", size);
+//RPRINT("%d bytes to send\n", size);
 
 	start=bytes;
 	while (bytes_to_write)
@@ -117,7 +117,7 @@ int rfbGetProtocolVersion(void)
 	{
 		goto end;
 	}
-	PSPRINT("get server protocol version:%s\n",value);
+	RPRINT("get server protocol version:%s\n",value);
 	if(strcmp(value,"RFB 003.003\n")==0)
 	{
 		ret=RFB_003_003;
@@ -151,7 +151,7 @@ int rfbSendProtocolVersion(int version)
 			break;
 		default:
 			ret=-1;
-			PSPRINT("unknown protocol version:%d\n", value);
+			RPRINT("unknown protocol version:%d\n", value);
 			goto end;
 	}
 	ret = rfbSendBytes((unsigned char*)value, 12);
@@ -160,7 +160,7 @@ int rfbSendProtocolVersion(int version)
 		ret = -1;
 		goto end;
 	}
-	PSPRINT("send server protocol version:%s\n",value);
+	RPRINT("send server protocol version:%s\n",value);
 end:
 	return ret;
 }
@@ -327,7 +327,7 @@ int rfbSendMsg(unsigned int msg_type, void * data)
 		
 		default:
 			ret = -1;
-			PSPRINT("unknown client to server msg type:%d\n", msg_type);
+			RPRINT("unknown client to server msg type:%d\n", msg_type);
 	}
 end:
 	return ret;
@@ -353,26 +353,26 @@ int rfbGetMsg(void * data)
 	switch ((int)msg_type)
 	{
 		case RFB_FramebufferUpdate:
-			PSPRINT("received msg RFB_FramebufferUpdate from server\n");
+			RPRINT("received msg RFB_FramebufferUpdate from server\n");
 			{
 				ret = rfbGetBytes(((unsigned char *)data)+1, sizeof(RFB_FRAMEBUFFER_UPDATE)-1);
 			}
 			break;
 
 		case RFB_SetColourMapEntries:
-			PSPRINT("received msg RFB_SetColourMapEntries from server\n");
+			RPRINT("received msg RFB_SetColourMapEntries from server\n");
 			{
 				ret = rfbGetBytes(((unsigned char *)data)+1, sizeof(RFB_SET_COLOUR_MAP_ENTRIES)-1);
 			}
 			break;
 			
 		case RFB_Bell:
-			PSPRINT("received msg RFB_Bell from server\n");
+			RPRINT("received msg RFB_Bell from server\n");
 			ret = 1;
 			break;
 
 		case RFB_ServerCutText:
-			PSPRINT("received msg RFB_ServerCutText from server\n");
+			RPRINT("received msg RFB_ServerCutText from server\n");
 			{
 				ret = rfbGetBytes(((unsigned char *)data)+1, sizeof(RFB_SERVER_CUT_TEXT)-1);
 			}
@@ -380,7 +380,7 @@ int rfbGetMsg(void * data)
 		
 		default:
 			ret=-1;
-			PSPRINT("unknown msg type received from server:%d\n", msg_type);
+			RPRINT("unknown msg type received from server:%d\n", msg_type);
 			break;
 	}
 end:

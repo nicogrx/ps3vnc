@@ -58,8 +58,8 @@ int draw16bppRectangleToScreen(unsigned short *buffer,
 	unsigned int vrest_src_width;
 	unsigned int v_dest_width;
 
-	//PSPRINT("draw 16bpp rectangle\n(%d,%d) @ (%d,%d)\n", width, height, x, y);
-	//PSPRINT("screen size = (%d,%d)\n", res.width, res.height);
+	//RPRINT("draw 16bpp rectangle\n(%d,%d) @ (%d,%d)\n", width, height, x, y);
+	//RPRINT("screen size = (%d,%d)\n", res.width, res.height);
 
 	if (x+width>res.width || y+height>res.height)
 	{
@@ -112,7 +112,7 @@ int draw16bppRectangleToScreen(unsigned short *buffer,
 			vc_src  += v_src_width;
 			vi_dest += v_dest_width;
 		}
-		//PSPRINT("end of vectorized copy\n");
+		//RPRINT("end of vectorized copy\n");
 	}
 	
 	vrest_src_width = width%8;
@@ -135,7 +135,7 @@ int draw16bppRectangleToScreen(unsigned short *buffer,
 			src+=width;
 			dest+=res.width;
 		}
-		//PSPRINT("end of scalar copy\n");
+		//RPRINT("end of scalar copy\n");
 	}
 	return 0;
 }
@@ -160,8 +160,8 @@ int draw32bppRectangleToScreen(unsigned int *buffer,
 	unsigned int vrest_src_width;
 	unsigned int v_dest_width;
 
-	//PSPRINT("draw 32bpp rectangle\n(%d,%d) @ (%d,%d)\n", width, height, x, y);
-	//PSPRINT("screen size = (%d,%d)\n", res.width, res.height);
+	//RPRINT("draw 32bpp rectangle\n(%d,%d) @ (%d,%d)\n", width, height, x, y);
+	//RPRINT("screen size = (%d,%d)\n", res.width, res.height);
 
 	if (x+width>res.width || y+height>res.height)
 	{
@@ -187,7 +187,7 @@ int draw32bppRectangleToScreen(unsigned int *buffer,
 			vi_src  += v_src_width;
 			vi_dest += v_dest_width;
 		}
-		//PSPRINT("end of vectorized copy\n");
+		//RPRINT("end of vectorized copy\n");
 	}
 	vrest_src_width = width%4;
 	if (vrest_src_width!=0)
@@ -204,7 +204,7 @@ int draw32bppRectangleToScreen(unsigned int *buffer,
 			src+=width;
 			dest+=res.width;
 		}
-		//PSPRINT("end of scalar copy\n");
+		//RPRINT("end of scalar copy\n");
 	}
 
 	return 0;

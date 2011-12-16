@@ -1,17 +1,13 @@
 #include "remoteprint.h"
 #include "term.h"
 
-#ifdef VERBOSE
-
-#ifdef REMOTE_PRINT
-#define PSPRINT remotePrint
+#if defined(REMOTE_PRINT)
+#define RPRINT remotePrint
 #else
+#define RPRINT (void)
+#endif
+
 #define PSPRINT PSPrint
-#endif
-
-#else
-#define PSPRINT (void)
-#endif
 
 extern PSTerm psterm;
 extern PSFont psfont;

@@ -16,6 +16,7 @@
 
 int rp_sock;
 SDL_mutex *print_mutex;
+#ifdef REMOTE_PRINT
 int remotePrintConnect(const char * ip)
 {
 	int ret;
@@ -61,3 +62,8 @@ void remotePrint(const char * fmt, ...)
 
 	SDL_UnlockMutex(print_mutex);
 }
+#else
+int remotePrintConnect(const char * ip) { return 0; }
+void remotePrintClose(void) {}
+void remotePrint(const char * fmt, ...) {}
+#endif

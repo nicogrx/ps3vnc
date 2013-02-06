@@ -22,7 +22,8 @@ struct vnc_client {
 	char server_ip[MAX_CHARS];
 	char password[MAX_CHARS];
 	SDL_Thread *msg_thread;
-	SDL_mutex *display_mutex;
+	SDL_Thread *req_thread;
+	SDL_mutex *lock;
 	SDL_Surface *framebuffer;
 	SDL_Rect updated_rect;
 	unsigned int rmask;
@@ -35,7 +36,7 @@ struct vnc_client {
 static int handshake(struct vnc_client *vncclient);
 static int authenticate(char *password);
 static int init(struct vnc_client *vncclient);
-//static int handleInputEvents(void * data);
+static int requestUpdate(void * data);
 static int handleMsgs(void * data);
 static int handleRectangle(struct vnc_client *vncclient);
 #if 0
@@ -69,6 +70,28 @@ enum MouseButtons
 	M_WHEEL_UP = 1 << 3,
 	M_WHEEL_DOWN = 1 << 4
 };
+
+static int request_framebuffer_update(struct vnc_client *vncclient)
+{
+	int ret;
+
+	SDL_LockMutex(vncclient->lock);
+	RFB_FRAMEBUFFER_UPDATE_REQUEST * rfbur =
+		(RFB_FRAMEBUFFER_UPDATE_REQUEST *)vncclient->output_msg;
+	rfbur->incremental = 1;
+	rfbur->x_position = 0;
+	rfbur->y_position = 0;
+	rfbur->width = vncclient->rfb_info.server_init_msg.framebuffer_width;
+	rfbur->height = vncclient->rfb_info.server_init_msg.framebuffer_height;
+	ret = rfbSendMsg(RFB_FramebufferUpdateRequest, rfbur);
+	SDL_UnlockMutex(vncclient->lock);
+	if (ret<0)
+		remotePrint("failed to request framebuffer update\n");
+	else
+		remotePrint("requested framebuffer update\n");
+	return ret;
+}
+
 static int get_button_mask(SDL_Event *event)
 {
 	switch(event->button.button) {
@@ -88,20 +111,28 @@ static int get_button_mask(SDL_Event *event)
 static int key_event(struct vnc_client *vncclient,
 	unsigned char downflag, unsigned int key)
 {
+	int ret;
+	SDL_LockMutex(vncclient->lock);
 	RFB_KEY_EVENT * rke = (RFB_KEY_EVENT *)vncclient->output_msg;
 	rke->down_flag = downflag;
 	rke->key = key;
-	return rfbSendMsg(RFB_KeyEvent, rke);
+	ret = rfbSendMsg(RFB_KeyEvent, rke);
+	SDL_UnlockMutex(vncclient->lock);
+	return ret;
 }
 
 static int pointer_event(struct vnc_client *vncclient,
 	unsigned char buttonmask, unsigned short x, unsigned short y)
 {
+	int ret;
+	SDL_LockMutex(vncclient->lock);
 	RFB_POINTER_EVENT * rpe = (RFB_POINTER_EVENT *)vncclient->output_msg;
 	rpe->button_mask = buttonmask;
 	rpe->x_position = x;
 	rpe->y_position = y;
-	return rfbSendMsg(RFB_PointerEvent, rpe);
+	ret = rfbSendMsg(RFB_PointerEvent, rpe);
+	SDL_UnlockMutex(vncclient->lock);
+	return ret;
 }
 static int get_sdl_event(struct vnc_client *vncclient) {
 	SDL_Event event;
@@ -152,11 +183,9 @@ int main(int argc, const char* argv[])
 	if (ret < 0)
 		return ret;
 
-#ifdef REMOTE_PRINT
 	ret = remotePrintConnect("192.168.1.4");
 	if (ret<0)
 		goto net_close;
-#endif
 
 	ret = initDisplay(1920, 1080);
 	if (ret)
@@ -164,8 +193,8 @@ int main(int argc, const char* argv[])
 
 	reset_updated_region(&vncclient);
 	
-	vncclient.display_mutex=SDL_CreateMutex();
-	if(!vncclient.display_mutex)
+	vncclient.lock=SDL_CreateMutex();
+	if(!vncclient.lock)
 		goto display_close;
 	
 	memset(vncclient.server_ip, 0, MAX_CHARS);
@@ -228,11 +257,15 @@ int main(int argc, const char* argv[])
 	}
 	
 	vncclient.msg_thread = SDL_CreateThread(handleMsgs, (void*)&vncclient); 
+	vncclient.req_thread = SDL_CreateThread(requestUpdate, (void*)&vncclient); 
 	while(!vncclient.vnc_end) {
 			vncclient.vnc_end = get_sdl_event(&vncclient);
-			usleep(10000);
+			usleep(50000);
     }
 
+	if (vncclient.req_thread) {
+		SDL_KillThread(vncclient.req_thread);
+	}
 	if (vncclient.msg_thread) {
 		SDL_KillThread(vncclient.msg_thread);
 	}
@@ -244,13 +277,11 @@ int main(int argc, const char* argv[])
 rfb_close:
 	rfbClose();
 mutex_destroy:
-	SDL_DestroyMutex(vncclient.display_mutex);
+	SDL_DestroyMutex(vncclient.lock);
 display_close:
 	closeDisplay();
 rprint_close:
-#ifdef REMOTE_PRINT
 	remotePrintClose();
-#endif
 net_close:
 	netDeinitialize();
 	return ret;
@@ -492,22 +523,22 @@ end:
 	return ret;
 }
 
+static int requestUpdate(void * data)
+{
+	struct vnc_client *vncclient=(struct vnc_client *)data;
+	while(!vncclient->vnc_end) // main loop
+	{
+		request_framebuffer_update(vncclient);
+		usleep(20000);
+	}
+	return 0;
+}
+
 // handle incoming msgs and render screen 
 static int handleMsgs(void * data)
 {
 	int i, ret;
 	struct vnc_client *vncclient=(struct vnc_client *)data;
-	RFB_FRAMEBUFFER_UPDATE_REQUEST * rfbur =
-		(RFB_FRAMEBUFFER_UPDATE_REQUEST *)vncclient->output_msg;
-	rfbur->incremental = 1;
-	rfbur->x_position = 0;
-	rfbur->y_position = 0;
-	rfbur->width = vncclient->rfb_info.server_init_msg.framebuffer_width;
-	rfbur->height = vncclient->rfb_info.server_init_msg.framebuffer_height;
-	ret = rfbSendMsg(RFB_FramebufferUpdateRequest, rfbur);
-	if (ret<0)
-		goto end;
-	remotePrint("requested initial framebuffer update\n");
 
 	while(!vncclient->vnc_end) // main loop
 	{
@@ -516,10 +547,9 @@ static int handleMsgs(void * data)
 		if (ret<=0)
 		{
 				//remotePrint("rfbGetMsg failed, retrying in 10 ms...\n");
-				usleep(10000);
 				continue;
 		}
-		
+		SDL_LockMutex(vncclient->lock);
 		switch (vncclient->input_msg[0])
 		{
 			case RFB_FramebufferUpdate:
@@ -538,21 +568,6 @@ static int handleMsgs(void * data)
 					fillDisplay(vncclient->framebuffer, &vncclient->updated_rect);
 					updateDisplay();
 					reset_updated_region(vncclient);
-					
-					{
-						// request framebuffer update
-						RFB_FRAMEBUFFER_UPDATE_REQUEST * rfbur =
-							(RFB_FRAMEBUFFER_UPDATE_REQUEST *)vncclient->output_msg;
-						rfbur->incremental = 1;
-						rfbur->x_position = 0;
-						rfbur->y_position = 0;
-						rfbur->width = vncclient->rfb_info.server_init_msg.framebuffer_width;
-						rfbur->height = vncclient->rfb_info.server_init_msg.framebuffer_height;
-						ret = rfbSendMsg(RFB_FramebufferUpdateRequest, rfbur);
-						if (ret<0)
-							goto end;
-						remotePrint("requested framebuffer update after rendering screen\n");
-					}
 				}		
 				break;
 			case RFB_Bell:
@@ -585,6 +600,7 @@ static int handleMsgs(void * data)
 				ret=-1;
 				goto end;
 		}
+		SDL_UnlockMutex(vncclient->lock);
 	} // end main loop
 
 end:

@@ -11,8 +11,6 @@
 #include "rfb.h"
 #include "remoteprint.h"
 
-#define MAX_BYTES_IN_ONE_READ_WRITE 16384
-
 static int rfb_sock;
 static SDL_mutex *rfb_mutex;
 
@@ -58,20 +56,13 @@ int rfbGetBytes(unsigned char * bytes, int size)
 
 	start=bytes;
 	while (bytes_to_read)
-		{
-			if (bytes_to_read>MAX_BYTES_IN_ONE_READ_WRITE)
-			{
-				ret = recv(rfb_sock, start, MAX_BYTES_IN_ONE_READ_WRITE, 0);
-			}
-			else
-			{
-				ret = recv(rfb_sock, start, bytes_to_read, 0);
-			}
-			if (ret<0)
-				break;
-			start+=ret;
-			bytes_to_read-=ret;
-		}
+	{
+		ret = recv(rfb_sock, start, bytes_to_read, 0);
+		if (ret<0)
+			break;
+		start+=ret;
+		bytes_to_read-=ret;
+	}
 	if (ret>=0)
 	{
 		ret = size;
@@ -79,7 +70,6 @@ int rfbGetBytes(unsigned char * bytes, int size)
 	}
 	return ret;
 }
-
 int rfbSendBytes(unsigned char * bytes, int size)
 {
 	int ret=0;
@@ -89,26 +79,18 @@ int rfbSendBytes(unsigned char * bytes, int size)
 	SDL_LockMutex(rfb_mutex);
 	start=bytes;
 	while (bytes_to_write)
-		{
-			if (bytes_to_write>MAX_BYTES_IN_ONE_READ_WRITE)
-			{
-				ret = send(rfb_sock, start, MAX_BYTES_IN_ONE_READ_WRITE, 0);
-			}
-			else
-			{
-				ret = send(rfb_sock, start, bytes_to_write, 0);
-			}
-			if (ret<0)
-				break;
-			start+=ret;
-			bytes_to_write-=ret;
-		}
+	{
+		ret = send(rfb_sock, start, bytes_to_write, 0);
+		if (ret<0)
+			break;
+		start+=ret;
+		bytes_to_write-=ret;
+	}
 	if (ret>=0)
 		ret = size;
 	SDL_UnlockMutex(rfb_mutex);
 	return ret;
 }
-
 int rfbGetProtocolVersion(void)
 {
 	int ret=-1;

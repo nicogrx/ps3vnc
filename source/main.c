@@ -19,7 +19,6 @@ struct vnc_client {
 	unsigned char input_msg[32];
 	unsigned char output_msg[32];
 	int vnc_end;
-	int frame_update_requested;
 	char server_ip[MAX_CHARS];
 	char password[MAX_CHARS];
 	SDL_Thread *msg_thread;
@@ -147,7 +146,6 @@ int main(int argc, const char* argv[])
 	struct vnc_client vncclient;
 
 	vncclient.vnc_end=0;
-	vncclient.frame_update_requested=0;
 	startTicks();
 
 	ret = netInitialize();
@@ -509,7 +507,6 @@ static int handleMsgs(void * data)
 	ret = rfbSendMsg(RFB_FramebufferUpdateRequest, rfbur);
 	if (ret<0)
 		goto end;
-	vncclient->frame_update_requested=1;
 	remotePrint("requested initial framebuffer update\n");
 
 	while(!vncclient->vnc_end) // main loop
@@ -536,16 +533,13 @@ static int handleMsgs(void * data)
 						if (ret<0)
 							goto end;
 					}
-					vncclient->frame_update_requested=0;
 				 
 					remotePrint("draw updated rectangle to screen\n");
 					fillDisplay(vncclient->framebuffer, &vncclient->updated_rect);
 					updateDisplay();
 					reset_updated_region(vncclient);
 					
-					if (!vncclient->frame_update_requested)
 					{
-						vncclient->frame_update_requested=1;
 						// request framebuffer update
 						RFB_FRAMEBUFFER_UPDATE_REQUEST * rfbur =
 							(RFB_FRAMEBUFFER_UPDATE_REQUEST *)vncclient->output_msg;
@@ -562,9 +556,7 @@ static int handleMsgs(void * data)
 				}		
 				break;
 			case RFB_Bell:
-#ifdef PAD_ENABLED			
-				vibratePad();
-#endif
+				//vibratePad();
 				break;
 			case RFB_ServerCutText:
 				{
@@ -668,7 +660,6 @@ static int handleRectangle(struct vnc_client *vncclient)
 		case RFB_Raw:
 			{
 				remotePrint("RFB_Raw\n");
-				unsigned char * dest;
 				
 				scratchbuffer = SDL_CreateRGBSurface(SDL_SWSURFACE, rect.w, rect.h,
 					vncclient->rfb_info.server_init_msg.pixel_format.bits_per_pixel,
@@ -681,8 +672,7 @@ static int handleRectangle(struct vnc_client *vncclient)
 					ret = -1;
 					goto end;
         }
-				dest = scratchbuffer->pixels;
-				ret = rfbGetBytes(dest, rect.w * rect.h * bpp);
+				ret = rfbGetBytes(scratchbuffer->pixels, rect.w * rect.h * bpp);
 				if (ret<0)
 				{
 					remotePrint("failed to %d pixels\n", rect.w * rect.h * bpp);

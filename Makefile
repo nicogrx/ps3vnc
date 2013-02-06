@@ -33,7 +33,7 @@ CONTENTID	:=	UP0001-$(APPID)_00-0000000000000000
 # options for code generation
 #---------------------------------------------------------------------------------
 
-CFLAGS		=	-O2 -Wall -mcpu=cell $(MACHDEP) $(INCLUDE) -UREMOTE_PRINT -DPAD_ENABLED -DMOUSE_ENABLED
+CFLAGS		=	-O2 -Wall -mcpu=cell $(MACHDEP) $(INCLUDE) -DREMOTE_PRINT
 
 CXXFLAGS	=	$(CFLAGS)
 
@@ -42,8 +42,7 @@ LDFLAGS		=	$(MACHDEP) -Wl,-Map,$(notdir $@).map
 #---------------------------------------------------------------------------------
 # any extra libraries we wish to link with the project
 #---------------------------------------------------------------------------------
-LIBS	:=	-lgcm_sys -lrsx -lsysutil -lio -lcairo -lm -lfreetype -lz -lpixman-1 -lrt -llv2 -lnet -lsysmodule
-
+LIBS	:=	-lnet -lSDL -lm -lgcm_sys -lrsx -lsysutil -lio -lsysmodule -laudio
 #---------------------------------------------------------------------------------
 # list of directories containing libraries, this must be the top level containing
 # include and lib

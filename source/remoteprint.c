@@ -8,19 +8,19 @@
 #include <netinet/in.h>
 #include <net/net.h>
 #include <arpa/inet.h>
-
+#include <SDL/SDL.h>
 #include "remoteprint.h"
 #include "tick.h"
 
 #define PORT	5899
 
 int rp_sock;
-
+SDL_mutex *print_mutex;
 int remotePrintConnect(const char * ip)
 {
 	int ret;
 	struct sockaddr_in server;
-
+	print_mutex=SDL_CreateMutex();
 	rp_sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
 	if (rp_sock < 0) {
 		ret = -1;
@@ -38,6 +38,7 @@ end:
 
 void remotePrintClose(void)
 {
+	SDL_DestroyMutex(print_mutex);
 	shutdown(rp_sock, SHUT_RDWR);
 	close(rp_sock);
 }
@@ -46,6 +47,9 @@ void remotePrint(const char * fmt, ...)
 {
 	va_list ap;
 	char buffer[128];
+	
+	SDL_LockMutex(print_mutex);
+
 	memset(buffer, 0, sizeof(buffer));
 	sprintf(buffer, "ticks=%u > ", getTicks());
 	send(rp_sock, buffer, strlen(buffer), 0);
@@ -55,22 +59,5 @@ void remotePrint(const char * fmt, ...)
 	va_end(ap);
 	send(rp_sock, buffer, strlen(buffer), 0);
 
+	SDL_UnlockMutex(print_mutex);
 }
-
-int remoteSendBytes(unsigned char * bytes, int size)
-{
-	int ret=0;
-	int bytes_to_write=size;
-
-	while (bytes_to_write)
-		{
-			ret = send(rp_sock, bytes, bytes_to_write, 0);
-			if (ret<0)
-				break;
-			bytes_to_write-=ret;
-		}
-	if (ret>=0)
-		ret = size;
-	return ret;
-}
-

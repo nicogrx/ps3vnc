@@ -7,20 +7,22 @@
 #include <sys/socket.h>
 #include <net/net.h>
 #include <arpa/inet.h>
+#include <SDL/SDL.h>
 #include "rfb.h"
-#include "psprint.h"
+#include "remoteprint.h"
 
 #define MAX_BYTES_IN_ONE_READ_WRITE 16384
 
-int rfb_sock;
-fd_set rfb_socks;
+static int rfb_sock;
+static SDL_mutex *rfb_mutex;
 
 int rfbConnect(const char * ip, int port)
 {
 	int ret;
 	int x;
 	struct sockaddr_in server;
-	
+
+	rfb_mutex=SDL_CreateMutex();
 	rfb_sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
 	if (rfb_sock < 0) {
 		ret = -1;
@@ -44,6 +46,7 @@ end:
 
 void rfbClose(void)
 {
+	SDL_DestroyMutex(rfb_mutex);
 	shutdown(rfb_sock, SHUT_RDWR);
 	close(rfb_sock);
 }
@@ -72,7 +75,7 @@ int rfbGetBytes(unsigned char * bytes, int size)
 	if (ret>=0)
 	{
 		ret = size;
-		//RPRINT("received %d bytes\n", size);
+		//remotePrint("received %d bytes\n", size);
 	}
 	return ret;
 }
@@ -83,8 +86,7 @@ int rfbSendBytes(unsigned char * bytes, int size)
 	int bytes_to_write=size;
 	unsigned char * start;
 	
-//RPRINT("%d bytes to send\n", size);
-
+	SDL_LockMutex(rfb_mutex);
 	start=bytes;
 	while (bytes_to_write)
 		{
@@ -103,7 +105,7 @@ int rfbSendBytes(unsigned char * bytes, int size)
 		}
 	if (ret>=0)
 		ret = size;
-
+	SDL_UnlockMutex(rfb_mutex);
 	return ret;
 }
 
@@ -117,7 +119,7 @@ int rfbGetProtocolVersion(void)
 	{
 		goto end;
 	}
-	RPRINT("get server protocol version:%s\n",value);
+	remotePrint("get server protocol version:%s\n",value);
 	if(strcmp(value,"RFB 003.003\n")==0)
 	{
 		ret=RFB_003_003;
@@ -151,7 +153,7 @@ int rfbSendProtocolVersion(int version)
 			break;
 		default:
 			ret=-1;
-			RPRINT("unknown protocol version:%d\n", value);
+			remotePrint("unknown protocol version:%d\n", value);
 			goto end;
 	}
 	ret = rfbSendBytes((unsigned char*)value, 12);
@@ -160,7 +162,7 @@ int rfbSendProtocolVersion(int version)
 		ret = -1;
 		goto end;
 	}
-	RPRINT("send server protocol version:%s\n",value);
+	remotePrint("send server protocol version:%s\n",value);
 end:
 	return ret;
 }
@@ -327,7 +329,7 @@ int rfbSendMsg(unsigned int msg_type, void * data)
 		
 		default:
 			ret = -1;
-			RPRINT("unknown client to server msg type:%d\n", msg_type);
+			remotePrint("unknown client to server msg type:%d\n", msg_type);
 	}
 end:
 	return ret;
@@ -353,26 +355,26 @@ int rfbGetMsg(void * data)
 	switch ((int)msg_type)
 	{
 		case RFB_FramebufferUpdate:
-			RPRINT("received msg RFB_FramebufferUpdate from server\n");
+			remotePrint("received msg RFB_FramebufferUpdate from server\n");
 			{
 				ret = rfbGetBytes(((unsigned char *)data)+1, sizeof(RFB_FRAMEBUFFER_UPDATE)-1);
 			}
 			break;
 
 		case RFB_SetColourMapEntries:
-			RPRINT("received msg RFB_SetColourMapEntries from server\n");
+			remotePrint("received msg RFB_SetColourMapEntries from server\n");
 			{
 				ret = rfbGetBytes(((unsigned char *)data)+1, sizeof(RFB_SET_COLOUR_MAP_ENTRIES)-1);
 			}
 			break;
 			
 		case RFB_Bell:
-			RPRINT("received msg RFB_Bell from server\n");
+			remotePrint("received msg RFB_Bell from server\n");
 			ret = 1;
 			break;
 
 		case RFB_ServerCutText:
-			RPRINT("received msg RFB_ServerCutText from server\n");
+			remotePrint("received msg RFB_ServerCutText from server\n");
 			{
 				ret = rfbGetBytes(((unsigned char *)data)+1, sizeof(RFB_SERVER_CUT_TEXT)-1);
 			}
@@ -380,7 +382,7 @@ int rfbGetMsg(void * data)
 		
 		default:
 			ret=-1;
-			RPRINT("unknown msg type received from server:%d\n", msg_type);
+			remotePrint("unknown msg type received from server:%d\n", msg_type);
 			break;
 	}
 end:

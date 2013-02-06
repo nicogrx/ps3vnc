@@ -5,23 +5,10 @@ typedef struct
 } DisplayResolution;
 extern DisplayResolution res;
 
-extern void initDisplay(void);
-extern void updateDisplay(void);
-extern void closeDisplay(void);
-int draw16bppRectangleToScreen(unsigned short *buffer,
-		unsigned int width,
-		unsigned int height,
-		unsigned int x,
-		unsigned int y);
-int draw32bppRectangleToScreen(unsigned int *buffer,
-		unsigned int width,
-		unsigned int height,
-		unsigned int x,
-		unsigned int y);
-
-enum draw_screen_mode
-{
-	DS_MODE_16BPP,
-	DS_MODE_32BPP
-};
+int initDisplay(int, int);
+void updateDisplay(void);
+void closeDisplay(void);
+void fillDisplay(SDL_Surface *in_surface, SDL_Rect *updated_rect);
+void blitFromDisplay(SDL_Surface *out_surface, SDL_Rect *src_rect, SDL_Rect *dest_rect);
+void updateDisplay(void);
 

@@ -2,302 +2,303 @@
 #include <unistd.h>
 #include <string.h>
 #include <net/net.h>
-#include <sys/thread.h>
-#include <sys/mutex.h>
 
-#ifdef PAD_ENABLED
-#include <io/pad.h>
-#endif
-#ifdef MOUSE_ENABLED
-#include <io/mouse.h>
-#endif
-#include <io/kb.h>
+#include <SDL/SDL.h>
+#include <SDL/SDL_thread.h>
 
 #include "rfb.h"
 #include "vncauth.h"
-
 #include "rsxutil.h"
 #include "screen.h"
-
-#define XK_MISCELLANY
-#define XK_LATIN1
-#include "keysymdef.h"
-#include "mouse.h"
-
-#include "psprint.h"
 #include "tick.h"
+#include "remoteprint.h"
+
+#define MAX_CHARS 128
+struct vnc_client {
+	RFB_INFO rfb_info;
+	unsigned char input_msg[32];
+	unsigned char output_msg[32];
+	int vnc_end;
+	int frame_update_requested;
+	char server_ip[MAX_CHARS];
+	char password[MAX_CHARS];
+	SDL_Thread *msg_thread;
+	SDL_mutex *display_mutex;
+	SDL_Surface *framebuffer;
+	SDL_Rect updated_rect;
+	unsigned int rmask;
+	unsigned int gmask;
+	unsigned int bmask;
+	unsigned int amask;
+};
 
 // functions prototypes
-static int handshake(char * password);
-static int authenticate(char * password);
-static int init(void);
-static unsigned short convertKeyCode(unsigned short keycode);
-static void handleInputEvents(void * arg);
-#ifdef PAD_ENABLED
-static void	vibratePad(void);
-int padAnalogDelta(int value);
+static int handshake(struct vnc_client *vncclient);
+static int authenticate(char *password);
+static int init(struct vnc_client *vncclient);
+//static int handleInputEvents(void * data);
+static int handleMsgs(void * data);
+static int handleRectangle(struct vnc_client *vncclient);
+#if 0
+static int handleRRERectangles(struct vnc_client *vncclient, 
+	const RFB_FRAMEBUFFER_UPDATE_RECTANGLE *, int, int, int);
 #endif
-static void handleMsgs(void * arg);
-static int handleRectangle(void);
-static int HandleRRERectangles(const RFB_FRAMEBUFFER_UPDATE_RECTANGLE *, int, int, int);
-static void pstermRefresh(void * arg);
-
-// globals
-RFB_INFO rfb_info;
-unsigned char input_msg[32];
-unsigned char output_msg[32];
-unsigned char * raw_pixel_data = NULL;
-unsigned char * old_raw_pixel_data = NULL;
-int vnc_end;
-unsigned char draw_mode;
-volatile int frame_update_requested;
-
-unsigned int psprint_end;
-
-sys_mutex_t display_mutex;
-sys_mutex_attr_t display_mutex_attr;
+static int key_event(struct vnc_client *vncclient,
+	unsigned char downflag, unsigned int key);
+static int pointer_event(struct vnc_client *vncclient,
+	unsigned char buttonmask, unsigned short x, unsigned short y);
+static void reset_updated_region(struct vnc_client *);
 
 #define CONFIG_FILE "/dev_hdd0/tmp/vncconfig.txt"
+/*
+static void	vibratePad(void)
+{
+	padActParam actparam;
+	actparam.small_motor = 1;
+	actparam.large_motor = 0;
+	ioPadSetActDirect(0, &actparam);
+	usleep(500000);
+	actparam.small_motor = 0;
+	ioPadSetActDirect(0, &actparam);
+}
+*/
+enum MouseButtons
+{
+	M_LEFT = 1 << 0,
+	M_MIDDLE = 1 << 1,
+	M_RIGHT = 1 << 2,
+	M_WHEEL_UP = 1 << 3,
+	M_WHEEL_DOWN = 1 << 4
+};
+static int get_button_mask(SDL_Event *event)
+{
+	switch(event->button.button) {
+		case SDL_BUTTON_LEFT:
+			return M_LEFT;
+		case SDL_BUTTON_MIDDLE:
+			return M_MIDDLE;
+		case SDL_BUTTON_RIGHT:
+			return M_RIGHT;
+		case SDL_BUTTON_WHEELUP:
+			return M_WHEEL_UP;
+		case SDL_BUTTON_WHEELDOWN:
+			return M_WHEEL_DOWN;
+	}
+	return 0;
+}
+static int key_event(struct vnc_client *vncclient,
+	unsigned char downflag, unsigned int key)
+{
+	RFB_KEY_EVENT * rke = (RFB_KEY_EVENT *)vncclient->output_msg;
+	rke->down_flag = downflag;
+	rke->key = key;
+	return rfbSendMsg(RFB_KeyEvent, rke);
+}
+
+static int pointer_event(struct vnc_client *vncclient,
+	unsigned char buttonmask, unsigned short x, unsigned short y)
+{
+	RFB_POINTER_EVENT * rpe = (RFB_POINTER_EVENT *)vncclient->output_msg;
+	rpe->button_mask = buttonmask;
+	rpe->x_position = x;
+	rpe->y_position = y;
+	return rfbSendMsg(RFB_PointerEvent, rpe);
+}
+static int get_sdl_event(struct vnc_client *vncclient) {
+	SDL_Event event;
+	static unsigned short x = 0;
+	static unsigned short y = 0;
+	static unsigned char buttonmask = 0;
+
+  while(SDL_PollEvent(&event)) {
+		switch(event.type) {
+		case SDL_QUIT:
+			return 1;
+		case SDL_KEYDOWN:
+			if(event.key.keysym.sym == SDLK_q) 
+				return 1;
+			key_event(vncclient, 1, event.key.keysym.sym);
+			break;
+    case SDL_KEYUP:
+			key_event(vncclient, 0, event.key.keysym.sym);
+			break;
+		case SDL_MOUSEMOTION:
+			x = event.motion.x;
+			y = event.motion.y;
+			pointer_event(vncclient, buttonmask, x, y);
+			break;
+		case SDL_MOUSEBUTTONDOWN:
+			buttonmask |= get_button_mask(&event);
+			pointer_event(vncclient, buttonmask, x, y);
+			break;
+		case SDL_MOUSEBUTTONUP:
+			buttonmask &= ~get_button_mask(&event);
+			pointer_event(vncclient, buttonmask, x, y);
+			break;
+		}
+  }
+	return 0;
+}
 
 int main(int argc, const char* argv[])
 {
 	int port, ret=0;
-	u64 retval;
-	sys_ppu_thread_t hie_id, hmsg_id;
-	u64 priority = 1500;
-	void *thread_arg = (void*)0x1337;
-	size_t stack_size = 0x1000;
-	char *handle_input_name = "Handle input events";
-	char *handle_msg_name = "Handle message";
-	char *psterm_refresh_name = "PSTerm refresh";
-	sys_ppu_thread_t psterm_refresh_id;
-	psfont.char_width=8;
-	psfont.char_height=16;
-	psterm.width=80;
-	psterm.height=65;
-	psterm.bg_color=0x00;
-	psterm.fg_color=0xFFFFFF00;
-	frame_update_requested=0;
-
-	#define MAX_CHARS 128
-	char server_ip[MAX_CHARS];
-	char password[MAX_CHARS];
 	FILE * pf;
+	struct vnc_client vncclient;
 
+	vncclient.vnc_end=0;
+	vncclient.frame_update_requested=0;
 	startTicks();
 
 	ret = netInitialize();
 	if (ret < 0)
 		return ret;
-	
-	initDisplay();
 
 #ifdef REMOTE_PRINT
 	ret = remotePrintConnect("192.168.1.4");
 	if (ret<0)
-		goto end0;
+		goto net_close;
 #endif
-	
-	memset(&display_mutex_attr, 0, sizeof(sys_mutex_attr_t));
-  display_mutex_attr.attr_protocol  = SYS_MUTEX_PROTOCOL_PRIO;
-  display_mutex_attr.attr_recursive = SYS_MUTEX_ATTR_NOT_RECURSIVE;
-  display_mutex_attr.attr_pshared   = SYS_MUTEX_ATTR_PSHARED;
-  display_mutex_attr.attr_adaptive  = SYS_MUTEX_ATTR_NOT_ADAPTIVE;
-	ret = sysMutexCreate(&display_mutex,&display_mutex_attr);
-	if (ret!=0)
-		goto end1;
-	
-	ret = PSTermInit(&psterm, &psfont);
-	if (ret<0)
-		goto end2;
-	
-	psprint_end=0;
-	ret = sysThreadCreate(&psterm_refresh_id, pstermRefresh, thread_arg,
-		priority, stack_size, THREAD_JOINABLE, psterm_refresh_name);
 
-	memset(server_ip, 0, MAX_CHARS);
-	memset(password, 0, MAX_CHARS);
+	ret = initDisplay(1920, 1080);
+	if (ret)
+		goto rprint_close;
 
-	PSPRINT("Read configuration file: %s... ", CONFIG_FILE);
+	reset_updated_region(&vncclient);
+	
+	vncclient.display_mutex=SDL_CreateMutex();
+	if(!vncclient.display_mutex)
+		goto display_close;
+	
+	memset(vncclient.server_ip, 0, MAX_CHARS);
+	memset(vncclient.password, 0, MAX_CHARS);
+
+	remotePrint("Read configuration file: %s\n", CONFIG_FILE);
 	pf=NULL;
 	pf = fopen(CONFIG_FILE, "r");
 
 	if (pf==NULL)
 	{
-		PSPRINT("failed!\n\n");
-		PSPRINT("Please, create text file :%s\n", CONFIG_FILE);
-		PSPRINT("Then, fill it with your vnc server addresss and password:\n");
-		PSPRINT("xxx.xxx.xxx.xxx\nyour_password\n");
-		RPRINT("failed to open configuration file\n");
-		vnc_end=1;
-		sleep(15);
-		goto end2;
+		remotePrint("failed to open configuration file\n");
+		vncclient.vnc_end=1;
+		sleep(2);
+		goto mutex_destroy;
 	}
-	fscanf(pf, "%s\n", server_ip);
-	fscanf(pf, "%s\n", password);
+
+	fscanf(pf, "%s\n", vncclient.server_ip);
+	fscanf(pf, "%s\n", vncclient.password);
 	fclose(pf);
-
-	RPRINT("server ip address = %s\n", server_ip);
-	RPRINT("password = %s\n", password);
-	
-	PSPRINT("done\n\n");
-	PSPRINT("server ip address = %s\n", server_ip);
-	PSPRINT("password = %s\n", password);
-
-	PSPRINT("connecting to %s... ", server_ip);
+	remotePrint("server ip address = %s\n", vncclient.server_ip);
+	remotePrint("password = %s\n", vncclient.password);
+	remotePrint("connecting to %s\n", vncclient.server_ip);
 
 	for(port=5900;port<5930;port++)
 	{
-		ret = rfbConnect(server_ip,port);
+		ret = rfbConnect(vncclient.server_ip, port);
 		if (ret>=0)
 		{
-			RPRINT("connected to serveur %s:%i\n", server_ip, port);
+			remotePrint("connected to serveur %s:%i\n", vncclient.server_ip, port);
 			break;
 		}
 	}
 	if (ret<0)
 	{
-		RPRINT("failed to connect to server %s\n", server_ip);
-		PSPRINT("failed!\n\n");
-		vnc_end=1;
-		sleep(15);	
-		goto end3;
+		remotePrint("failed to connect to server %s\n", vncclient.server_ip);
+		vncclient.vnc_end=1;
+		sleep(2);	
+		goto mutex_destroy;
 	}
 
-	PSPRINT("done\n\n");
+	remotePrint("handshake\n");
 	
-	RPRINT("handshake ...");
-	PSPRINT("handshake ...");
-	
-	ret = handshake(password);
+	ret = handshake(&vncclient);
 	if (ret<0)
 	{
-		PSPRINT("KO\n");
-		RPRINT("KO\n");
-		vnc_end=1;
-		sleep(15);
-		goto end4;
+		vncclient.vnc_end=1;
+		sleep(2);
+		goto rfb_close;
 	}
 
-	PSPRINT("OK\n");
-	RPRINT("OK\n");
-	
-	RPRINT("Init ... ");
-	PSPRINT("Init ... ");
+	remotePrint("init\n");
 
-	ret = init();
+	ret = init(&vncclient);
 	if (ret<0)
 	{
-		PSPRINT("KO\n");
-		RPRINT("KO\n");
-		vnc_end=1;
-		sleep(15);
-		goto end4;
+		vncclient.vnc_end=1;
+		sleep(2);
+		goto rfb_close;
 	}
 	
-	PSPRINT("OK\n");
-	RPRINT("OK\n");
+	vncclient.msg_thread = SDL_CreateThread(handleMsgs, (void*)&vncclient); 
+	while(!vncclient.vnc_end) {
+			vncclient.vnc_end = get_sdl_event(&vncclient);
+			usleep(10000);
+    }
 
-	psprint_end=1;
-	ret = sysThreadJoin(psterm_refresh_id, &retval);
-	RPRINT("join thread psterm_refresh_id\n");
-	
-	raw_pixel_data = (unsigned char *)malloc(
-		rfb_info.server_init_msg.framebuffer_width*
-		rfb_info.server_init_msg.framebuffer_height*
-		(rfb_info.server_init_msg.pixel_format.bits_per_pixel/8));
-
-	if (raw_pixel_data == NULL)
-	{
-		RPRINT("unable to allocate raw_pixel_data array\n");
-		ret=-1;
-		goto end4;
+	if (vncclient.msg_thread) {
+		SDL_KillThread(vncclient.msg_thread);
 	}
 
-	old_raw_pixel_data = (unsigned char *)malloc(
-		rfb_info.server_init_msg.framebuffer_width*
-		rfb_info.server_init_msg.framebuffer_height*
-		(rfb_info.server_init_msg.pixel_format.bits_per_pixel/8));
-
-	if (old_raw_pixel_data == NULL)
-	{
-		RPRINT("unable to allocate old_raw_pixel_data array\n");
-		ret=-1;
-		goto end4;
-	}
-	ret = sysThreadCreate(&hmsg_id, handleMsgs, thread_arg,
-		priority, stack_size, THREAD_JOINABLE, handle_msg_name);
-	ret = sysThreadCreate(&hie_id, handleInputEvents, thread_arg,
-		priority, stack_size, THREAD_JOINABLE, handle_input_name);
-	
-	ret = sysThreadJoin(hie_id, &retval);
-	RPRINT("join thread hie_id\n");
-	
-	if(raw_pixel_data!=NULL)
-		free(raw_pixel_data);
-	if(old_raw_pixel_data!=NULL)
-		free(old_raw_pixel_data);
-
-	if (rfb_info.server_name_string!=NULL)
-		free(rfb_info.server_name_string);
-
-end4:
+	if(vncclient.framebuffer!=NULL)
+		SDL_FreeSurface(vncclient.framebuffer);
+	if (vncclient.rfb_info.server_name_string!=NULL)
+		free(vncclient.rfb_info.server_name_string);
+rfb_close:
 	rfbClose();
-end3:
-	PSTermDestroy(&psterm);
-end2:
-	sysMutexDestroy(display_mutex);
-end1:
+mutex_destroy:
+	SDL_DestroyMutex(vncclient.display_mutex);
+display_close:
+	closeDisplay();
+rprint_close:
 #ifdef REMOTE_PRINT
 	remotePrintClose();
-end0:
 #endif
-	closeDisplay();
+net_close:
 	netDeinitialize();
 	return ret;
 }
 
-static int handshake(char * password)
+static int handshake(struct vnc_client *vncclient)
 {
 	int ret;
-	char * reason=NULL;
+	char *reason=NULL;
 
 	ret = rfbGetProtocolVersion();
 	if (ret<0)
 	{
-		RPRINT("failed to get protocol version\n");
+		remotePrint("failed to get protocol version\n");
 		goto end;
 	}
-	rfb_info.version = ret;
+	vncclient->rfb_info.version = ret;
 	ret = rfbSendProtocolVersion(RFB_003_003);
 	if (ret<0)
 	{
-		RPRINT("failed to send protocol version\n");
+		remotePrint("failed to send protocol version\n");
 		goto end;
 	}
 	ret = rfbGetSecurityType();
 	if (ret<0)
 	{
-		RPRINT("failed to get security type\n");
+		remotePrint("failed to get security type\n");
 		goto end;
 	}
-	rfb_info.security_type=ret;
-	RPRINT("security type:%i\n", rfb_info.security_type);
-	switch(rfb_info.security_type)
+	vncclient->rfb_info.security_type=ret;
+	remotePrint("security type:%i\n", vncclient->rfb_info.security_type);
+	switch(vncclient->rfb_info.security_type)
 	{
 		case RFB_SEC_TYPE_VNC_AUTH:
 			// authentication is needed
-			ret = authenticate(password);
+			ret = authenticate(vncclient->password);
 			if (ret!=RFB_SEC_RESULT_OK)
 			{
-				RPRINT("failed to authenticate, security result:%i\n", ret);
+				remotePrint("failed to authenticate, security result:%i\n", ret);
 				ret = -1;
 			}
 			break;
 		case RFB_SEC_TYPE_NONE:
 			//switch to init phase
 			ret=0;
-			RPRINT("no authentication needed\n");
+			remotePrint("no authentication needed\n");
 			break;	
 		case RFB_SEC_TYPE_INVALID: 
 			{
@@ -309,7 +310,7 @@ static int handshake(char * password)
 				reason = (char*)malloc(l+1);
 				if (reason == NULL)
 				{
-					RPRINT("failed to allocate %d bytes\n", l);
+					remotePrint("failed to allocate %d bytes\n", l);
 					ret = -1;
 					goto end;
 				}
@@ -320,20 +321,20 @@ static int handshake(char * password)
 					goto end;
 				}
 				reason[l]='\0';
-				RPRINT("%s\n",reason);
+				remotePrint("%s\n",reason);
 				free(reason);
 			}
 			ret = -1;
 			break;
 		default:
-			RPRINT("security type is not supported\n");
+			remotePrint("security type is not supported\n");
 	}
 
 end:
 	return ret;
 }
 
-static int authenticate(char * password)
+static int authenticate(char *password)
 {
 	int ret;
 	unsigned char challenge[16];
@@ -349,69 +350,68 @@ end:
 	return ret;
 }
 
-static int init(void)
+static int init(struct vnc_client * vncclient)
 {
 	int ret;
 	ret = rfbSendClientInit(RFB_NOT_SHARED);
 	if (ret<0)
 	{
-		RPRINT("failed to send client init msg\n");
+		remotePrint("failed to send client init msg\n");
 		goto end;
 	}
-	ret =rfbGetServerInitMsg(&(rfb_info.server_init_msg));
+	ret =rfbGetServerInitMsg(&(vncclient->rfb_info.server_init_msg));
 	if (ret<0)
 	{
-		RPRINT("failed to get server init msg\n");
+		remotePrint("failed to get server init msg\n");
 		goto end;
 	}
 
-	if ( rfb_info.server_init_msg.name_length!=0)
+	if ( vncclient->rfb_info.server_init_msg.name_length!=0)
 	{
-		int l = rfb_info.server_init_msg.name_length;
-		rfb_info.server_name_string = NULL;
-		rfb_info.server_name_string = (char*)malloc(l+1);
-		if (rfb_info.server_name_string == NULL)
+		int l = vncclient->rfb_info.server_init_msg.name_length;
+		vncclient->rfb_info.server_name_string = NULL;
+		vncclient->rfb_info.server_name_string = (char*)malloc(l+1);
+		if (vncclient->rfb_info.server_name_string == NULL)
 		{
-			RPRINT("failed to allocate %d bytes\n", l+1);
+			remotePrint("failed to allocate %d bytes\n", l+1);
 			ret = -1;
 			goto end;
 		}
-		ret = rfbGetBytes((unsigned char*)(rfb_info.server_name_string), l);
+		ret = rfbGetBytes((unsigned char*)(vncclient->rfb_info.server_name_string), l);
 		if (ret<0)
 		{
-			free(rfb_info.server_name_string);
+			free(vncclient->rfb_info.server_name_string);
 			goto end;
 		}
-		rfb_info.server_name_string[l]='\0';
-		RPRINT("server name:%s\n",rfb_info.server_name_string);
+		vncclient->rfb_info.server_name_string[l]='\0';
+		remotePrint("server name:%s\n",vncclient->rfb_info.server_name_string);
 	}
 
-	RPRINT("framebuffer_width:%i\nframebuffer_height:%i\n",
-		rfb_info.server_init_msg.framebuffer_width,
-		rfb_info.server_init_msg.framebuffer_height);
-	RPRINT("PIXEL FORMAT:\n");
-	RPRINT("bits_per_pixel:%i\ndepth:%i\nbig_endian_flag:%i\ntrue_colour_flag:%i\n",
-		rfb_info.server_init_msg.pixel_format.bits_per_pixel,
-		rfb_info.server_init_msg.pixel_format.depth,
-		rfb_info.server_init_msg.pixel_format.big_endian_flag,
-		rfb_info.server_init_msg.pixel_format.true_colour_flag);
-	RPRINT("red_max:%i\ngreen_max:%i\nblue_max:%i\n",
-		rfb_info.server_init_msg.pixel_format.red_max,
-		rfb_info.server_init_msg.pixel_format.green_max,
-		rfb_info.server_init_msg.pixel_format.blue_max);
-	RPRINT("red_shift:%i\ngreen_shift:%i\nblue_shift:%i\n",
-		rfb_info.server_init_msg.pixel_format.red_shift,
-		rfb_info.server_init_msg.pixel_format.green_shift,
-		rfb_info.server_init_msg.pixel_format.blue_shift);
+	remotePrint("framebuffer_width:%i framebuffer_height:%i\n",
+		vncclient->rfb_info.server_init_msg.framebuffer_width,
+		vncclient->rfb_info.server_init_msg.framebuffer_height);
+	remotePrint("bits_per_pixel:%i depth:%i big_endian_flag:%i true_colour_flag:%i\n",
+		vncclient->rfb_info.server_init_msg.pixel_format.bits_per_pixel,
+		vncclient->rfb_info.server_init_msg.pixel_format.depth,
+		vncclient->rfb_info.server_init_msg.pixel_format.big_endian_flag,
+		vncclient->rfb_info.server_init_msg.pixel_format.true_colour_flag);
+	remotePrint("red_max:%i green_max:%i blue_max:%i\n",
+		vncclient->rfb_info.server_init_msg.pixel_format.red_max,
+		vncclient->rfb_info.server_init_msg.pixel_format.green_max,
+		vncclient->rfb_info.server_init_msg.pixel_format.blue_max);
+	remotePrint("red_shift:%i green_shift:%i blue_shift:%i\n",
+		vncclient->rfb_info.server_init_msg.pixel_format.red_shift,
+		vncclient->rfb_info.server_init_msg.pixel_format.green_shift,
+		vncclient->rfb_info.server_init_msg.pixel_format.blue_shift);
 
 
 	// check width & height
-	if (rfb_info.server_init_msg.framebuffer_width>res.width ||
-			rfb_info.server_init_msg.framebuffer_height>res.height)
+	if (vncclient->rfb_info.server_init_msg.framebuffer_width>res.width ||
+			vncclient->rfb_info.server_init_msg.framebuffer_height>res.height)
 	{
-		RPRINT("cannot handle frame size: with=%i, height=%i\n",
-			rfb_info.server_init_msg.framebuffer_width,
-			rfb_info.server_init_msg.framebuffer_height);
+		remotePrint("cannot handle frame size: with=%i, height=%i\n",
+			vncclient->rfb_info.server_init_msg.framebuffer_width,
+			vncclient->rfb_info.server_init_msg.framebuffer_height);
 		ret=-1;
 		goto end;
 	}
@@ -419,37 +419,73 @@ static int init(void)
 	// check bpp & depth
 	// FIXME: in theory, every pixel format should be supported ...
 	// moreover, should be possible to send prefered PIXEL FORMAT to server
-	if (rfb_info.server_init_msg.pixel_format.bits_per_pixel==32 &&	rfb_info.server_init_msg.pixel_format.depth==24)
+	if (vncclient->rfb_info.server_init_msg.pixel_format.bits_per_pixel==32 &&
+			vncclient->rfb_info.server_init_msg.pixel_format.depth==24)
 	{
-		draw_mode=DS_MODE_32BPP;
+    vncclient->rmask = 0xff000000;
+    vncclient->gmask = 0x00ff0000;
+    vncclient->bmask = 0x0000ff00;
+    vncclient->amask = 0x000000ff;
+		vncclient->framebuffer = SDL_CreateRGBSurface(SDL_SWSURFACE,
+			vncclient->rfb_info.server_init_msg.framebuffer_width,
+			vncclient->rfb_info.server_init_msg.framebuffer_height,
+			32, vncclient->rmask, vncclient->gmask, vncclient->bmask, vncclient->amask);
+		if (vncclient->framebuffer==NULL) {
+			remotePrint("could not create framebuffer:%s.\n", SDL_GetError());
+			ret = -1;
+			goto end;
+		} else {
+			remotePrint("Framebuffer created\n");
+		}
+		SDL_SetAlpha(vncclient->framebuffer,0,0);
 	}
-	else if (rfb_info.server_init_msg.pixel_format.bits_per_pixel==16 && rfb_info.server_init_msg.pixel_format.depth==16)
+	else if (vncclient->rfb_info.server_init_msg.pixel_format.bits_per_pixel==16 &&
+			vncclient->rfb_info.server_init_msg.pixel_format.depth==16)
 	{
-		draw_mode=DS_MODE_16BPP;
+    vncclient->rmask = 0xf800;
+    vncclient->gmask = 0x7e0;
+    vncclient->bmask = 0x1f;
+		vncclient->framebuffer = SDL_CreateRGBSurface(SDL_SWSURFACE,
+			vncclient->rfb_info.server_init_msg.framebuffer_width,
+			vncclient->rfb_info.server_init_msg.framebuffer_height,
+			16, vncclient->rmask, vncclient->gmask, vncclient->bmask, 0);
+		if (vncclient->framebuffer==NULL) {
+			remotePrint("could not create framebuffer:%s.\n", SDL_GetError());
+			ret = -1;
+			goto end;
+		} else {
+			remotePrint("Framebuffer created\n");
+		}
+		SDL_SetAlpha(vncclient->framebuffer,0,0);
 	}
 	else
 	{
-		RPRINT("cannot handle bpp=%d, depth=%d\n",
-		rfb_info.server_init_msg.pixel_format.bits_per_pixel,
-		rfb_info.server_init_msg.pixel_format.depth);
+		remotePrint("cannot handle bpp=%d, depth=%d\n",
+		vncclient->rfb_info.server_init_msg.pixel_format.bits_per_pixel,
+		vncclient->rfb_info.server_init_msg.pixel_format.depth);
 		ret=-1;
 		goto end;
 
 	}
 
 	// check colour mode
-	if (rfb_info.server_init_msg.pixel_format.true_colour_flag!=1)
+	if (vncclient->rfb_info.server_init_msg.pixel_format.true_colour_flag!=1)
 	{
-		RPRINT("cannot handle colour map\n");
+		remotePrint("cannot handle colour map\n");
 		ret=-1;
 		goto end;
 	}
 
 	// now send supported encodings formats
 	{
-		RFB_SET_ENCODINGS * rse = (RFB_SET_ENCODINGS *)output_msg;
+		RFB_SET_ENCODINGS * rse = (RFB_SET_ENCODINGS *)vncclient->output_msg;
+#if 0
 		rse->number_of_encodings = 3;
 		int encoding_type[3] = {RFB_RRE, RFB_CopyRect, RFB_Raw};
+#else
+		rse->number_of_encodings = 2;
+		int encoding_type[2] = {RFB_CopyRect, RFB_Raw};
+#endif
 		rse->encoding_type = encoding_type;
 		ret = rfbSendMsg(RFB_SetEncodings, rse);
 	}
@@ -459,88 +495,70 @@ end:
 }
 
 // handle incoming msgs and render screen 
-static void handleMsgs(void * arg)
+static int handleMsgs(void * data)
 {
 	int i, ret;
-
-	RFB_FRAMEBUFFER_UPDATE_REQUEST * rfbur = (RFB_FRAMEBUFFER_UPDATE_REQUEST *)output_msg;
+	struct vnc_client *vncclient=(struct vnc_client *)data;
+	RFB_FRAMEBUFFER_UPDATE_REQUEST * rfbur =
+		(RFB_FRAMEBUFFER_UPDATE_REQUEST *)vncclient->output_msg;
 	rfbur->incremental = 1;
 	rfbur->x_position = 0;
 	rfbur->y_position = 0;
-	rfbur->width = rfb_info.server_init_msg.framebuffer_width;
-	rfbur->height = rfb_info.server_init_msg.framebuffer_height;
+	rfbur->width = vncclient->rfb_info.server_init_msg.framebuffer_width;
+	rfbur->height = vncclient->rfb_info.server_init_msg.framebuffer_height;
 	ret = rfbSendMsg(RFB_FramebufferUpdateRequest, rfbur);
 	if (ret<0)
 		goto end;
-	frame_update_requested=1;
-	RPRINT("requested initial framebuffer update\n");
+	vncclient->frame_update_requested=1;
+	remotePrint("requested initial framebuffer update\n");
 
-	while(!vnc_end) // main loop
+	while(!vncclient->vnc_end) // main loop
 	{
 		//handle server msgs
-		ret = rfbGetMsg(input_msg);
+		ret = rfbGetMsg(vncclient->input_msg);
 		if (ret<=0)
 		{
-				//RPRINT("rfbGetMsg failed, retrying in 10 ms...\n");
+				//remotePrint("rfbGetMsg failed, retrying in 10 ms...\n");
 				usleep(10000);
 				continue;
 		}
 		
-		switch (input_msg[0])
+		switch (vncclient->input_msg[0])
 		{
 			case RFB_FramebufferUpdate:
 				{
-					RFB_FRAMEBUFFER_UPDATE * rfbu = (RFB_FRAMEBUFFER_UPDATE *)input_msg;
+					RFB_FRAMEBUFFER_UPDATE *rfbu = (RFB_FRAMEBUFFER_UPDATE *)vncclient->input_msg;
+					remotePrint("%i rectangles to update\n", rfbu->number_of_rectangles);
+
 					for (i=0;i<rfbu->number_of_rectangles;i++)
 					{
-						ret = handleRectangle();
+						ret = handleRectangle(vncclient);
 						if (ret<0)
 							goto end;
 					}
-					frame_update_requested=0;
+					vncclient->frame_update_requested=0;
 				 
-					RPRINT("draw rectangle to screen\n");
-					waitFlip();
-					if(draw_mode == DS_MODE_16BPP)
-					{
-						draw16bppRectangleToScreen((unsigned short *)raw_pixel_data,
-						(unsigned int)rfb_info.server_init_msg.framebuffer_width,
-						(unsigned int)rfb_info.server_init_msg.framebuffer_height,
-						0, 0);
-					}
-					else if (draw_mode == DS_MODE_32BPP)
-					{
-						draw32bppRectangleToScreen((unsigned int*)raw_pixel_data,
-						(unsigned int)rfb_info.server_init_msg.framebuffer_width,
-						(unsigned int)rfb_info.server_init_msg.framebuffer_height,
-						0, 0);
-					}
-					RPRINT("update display\n");
+					remotePrint("draw updated rectangle to screen\n");
+					fillDisplay(vncclient->framebuffer, &vncclient->updated_rect);
 					updateDisplay();
-				 
-					if (!frame_update_requested)
+					reset_updated_region(vncclient);
+					
+					if (!vncclient->frame_update_requested)
 					{
-						frame_update_requested=1;
+						vncclient->frame_update_requested=1;
 						// request framebuffer update
-						RFB_FRAMEBUFFER_UPDATE_REQUEST * rfbur = (RFB_FRAMEBUFFER_UPDATE_REQUEST *)output_msg;
+						RFB_FRAMEBUFFER_UPDATE_REQUEST * rfbur =
+							(RFB_FRAMEBUFFER_UPDATE_REQUEST *)vncclient->output_msg;
 						rfbur->incremental = 1;
 						rfbur->x_position = 0;
 						rfbur->y_position = 0;
-						rfbur->width = rfb_info.server_init_msg.framebuffer_width;
-						rfbur->height = rfb_info.server_init_msg.framebuffer_height;
+						rfbur->width = vncclient->rfb_info.server_init_msg.framebuffer_width;
+						rfbur->height = vncclient->rfb_info.server_init_msg.framebuffer_height;
 						ret = rfbSendMsg(RFB_FramebufferUpdateRequest, rfbur);
 						if (ret<0)
 							goto end;
-						RPRINT("requested framebuffer update after rendering screen\n");
+						remotePrint("requested framebuffer update after rendering screen\n");
 					}
-				
-					RPRINT("START_B: memcpy raw_pixel_data\n");
-					memcpy(old_raw_pixel_data, raw_pixel_data, 
-						rfb_info.server_init_msg.framebuffer_width*
-						rfb_info.server_init_msg.framebuffer_height*
-						(rfb_info.server_init_msg.pixel_format.bits_per_pixel/8));
-					RPRINT("END_B: memcpy raw_pixel_data\n");
-						
 				}		
 				break;
 			case RFB_Bell:
@@ -550,12 +568,12 @@ static void handleMsgs(void * arg)
 				break;
 			case RFB_ServerCutText:
 				{
-					RFB_SERVER_CUT_TEXT * rsct = (RFB_SERVER_CUT_TEXT *)input_msg;
+					RFB_SERVER_CUT_TEXT * rsct = (RFB_SERVER_CUT_TEXT *)vncclient->input_msg;
 					char * text = NULL;
 					text = (char*)malloc(rsct->length+1);
 					if (text==NULL)
 					{
-						RPRINT("cannot allocate %u bytes to get cut text buffer\n", rsct->length);
+						remotePrint("cannot allocate %u bytes to get cut text buffer\n", rsct->length);
 						ret=-1;
 						goto end;
 					}
@@ -571,580 +589,147 @@ static void handleMsgs(void * arg)
 				break;
 			case RFB_SetColourMapEntries:
 			default:
-				RPRINT("cannot handle msg type:%d\n", input_msg[0]);
+				remotePrint("cannot handle msg type:%d\n", vncclient->input_msg[0]);
 				ret=-1;
 				goto end;
 		}
 	} // end main loop
 
 end:
-	vnc_end=1;
-	sysThreadExit(0);
+	vncclient->vnc_end=1;
+	return 0;
 }
 
-static unsigned short convertKeyCode(unsigned short keycode)
+void reset_updated_region(struct vnc_client *vncclient)
 {
-	unsigned short symdef;
-
-	switch(keycode)
-	{
-		case 0x8:
-			symdef = XK_BackSpace;
-			break;
-		case 0x9:
-			symdef = XK_Tab;
-			break;
-		case 0xa:
-		case 0xd:
-			symdef = XK_Return;
-			break;
-		case 0xb:
-			symdef = XK_Clear;
-			break;
-		case 0x8029:
-			symdef = XK_Escape;
-			break;
-		case 0x8050:
-			symdef = XK_Left;
-			break;
-		case 0x8052:
-			symdef = XK_Up;
-			break;
-		case 0x804f:
-			symdef = XK_Right;
-			break;
-		case 0x8051:
-			symdef = XK_Down;
-			break;
-
-		default:
-			symdef=keycode;
-	}
-	return symdef;
+	vncclient->updated_rect.w=0;
+	vncclient->updated_rect.h=0;
+	vncclient->updated_rect.x=0;
+	vncclient->updated_rect.y=0;
 }
-
-//handle joystick events
-static void handleInputEvents(void * arg)
+void grow_updated_region(struct vnc_client *vncclient, SDL_Rect *rect)
 {
-	KbInfo kbinfo;
-	KbData kbdata;
-#define MAX_KEYPRESS 4
-	unsigned short keycode[MAX_KEYPRESS];
-	unsigned short old_keycode[MAX_KEYPRESS];
-	int keycode_updated = 0;
-	int i, j, k, ret=0;
-#ifdef PAD_ENABLED
-	int pad_event=0;
-	padInfo padinfo;
-	padData paddata;
-#endif
-#ifdef MOUSE_ENABLED
-	int mouse_event=0;
-	mouseInfo mouseinfo;
-	mouseData mousedata;
-#endif
-	int buttons_state=0;
-	int x=0;
-	int y=0;
-	int request_frame_update=0;
+	unsigned short ax1, ay1, ax2, ay2;
+	unsigned short bx1, by1, bx2, by2;
 
-	RPRINT("handle input events\n");
-	
-	ioKbInit(MAX_KB_PORT_NUM);
-#ifdef PAD_ENABLED	
-	ioPadInit(7);
-#endif
-#ifdef MOUSE_ENABLED
-	ioMouseInit(2);
-#endif
-
-	memset(keycode, 0, sizeof(unsigned short)*MAX_KEYPRESS);
-	memset(old_keycode, 0, sizeof(unsigned short)*MAX_KEYPRESS);
-	
-	for(i=0; i<MAX_KEYBOARDS; i++)
-	{
-		if(kbinfo.status[i])
-		{
-			ioKbSetCodeType(i, KB_CODETYPE_ASCII);
-			break;
-		}
-	}
-
-	while(!vnc_end)
-	{
-		// check keyboard input events
-		ioKbGetInfo(&kbinfo);
-		for(i=0; i<MAX_KEYBOARDS; i++)
-		{
-			if(!kbinfo.status[i])
-				break;
-			
-			ioKbRead(i, &kbdata);
-			if (!kbdata.nb_keycode)
-				break;
-
-			keycode_updated = 0;
-
-			// check for new key pressed
-			for(j=0; j<kbdata.nb_keycode;j++)
-			{
-				if (!kbdata.keycode[j])
-					continue;
-				
-				request_frame_update=1;
-				RPRINT("key pressed! code[%d]=%x\n", j, kbdata.keycode[j]);
-				RFB_KEY_EVENT * rke = (RFB_KEY_EVENT *)output_msg;
-				rke->down_flag = 1;
-				rke->key = (unsigned int)convertKeyCode(kbdata.keycode[j]);
-				ret = rfbSendMsg(RFB_KeyEvent, rke);
-					
-				for (k=0; k<MAX_KEYPRESS;k++)
-				{
-					if (keycode[k]==kbdata.keycode[j])
-						break;
-				}
-				if (k==MAX_KEYPRESS) // key is not in keypress list, add it
-				{
-					// add new key in key pressed list
-					for (k=0; k<MAX_KEYPRESS;k++)
-					{
-						if (keycode[k]==0)
-						{
-							RPRINT("add key %x in keycode[%d]\n", kbdata.keycode[j], k);
-							keycode[k]=kbdata.keycode[j];
-							keycode_updated=1;	
-							break;
-						}
-					}
-				} // if (k==MAX_KEYPRESS)
-			}
-			if (keycode_updated)
-			{
-				// save keypress list
-				memcpy(old_keycode, keycode, 	sizeof(unsigned short)*MAX_KEYPRESS);
-			}
-
-			keycode_updated = 0;
-			// check for key released
-			for(k=0; k<MAX_KEYPRESS;k++)
-			{
-				if(old_keycode[k] == 0)
-					continue;
-				
-				for(j=0;j<kbdata.nb_keycode;j++)
-				{
-					if (old_keycode[k] == kbdata.keycode[j])
-						break;
-				}
-				if(j==kbdata.nb_keycode)
-				{
-					// key released
-					request_frame_update=1;
-					RPRINT("key released! code[%d]=%x\n", j, keycode[k]);
-					RFB_KEY_EVENT * rke = (RFB_KEY_EVENT *)output_msg;
-					rke->down_flag = 0;
-					rke->key = (unsigned int)convertKeyCode(keycode[k]);
-					ret = rfbSendMsg(RFB_KeyEvent, rke);
-
-					keycode[k]=0;
-					keycode_updated = 1;
-				}
-			}
-			if (keycode_updated)
-			{
-				// save keypress list
-				memcpy(old_keycode, keycode, 	sizeof(unsigned short)*MAX_KEYPRESS);
-			}
-			//ioKbClearBuf(i);
-			break;
-		}
-#ifdef PAD_ENABLED
-		// check joystick input events
-		ioPadGetInfo(&padinfo);
-		for(i=0; i<MAX_PADS; i++)
-		{
-			if(padinfo.status[i])
-			{
-				ioPadGetData(i, &paddata);
-				if(paddata.BTN_L3)
-				{
-					RPRINT("exit on user request\n");
-					vnc_end=1;
-				}
-
-				if (paddata.BTN_CROSS)
-				{
-					pad_event = 1;
-					buttons_state |= M_LEFT;
-				}
-				else if (buttons_state & M_LEFT)
-				{
-					pad_event = 1;
-					buttons_state &= ~M_LEFT;
-				}
-
-				if (paddata.BTN_CIRCLE)
-				{
-					pad_event = 1;
-					buttons_state |= M_RIGHT;
-				}
-				else if (buttons_state & M_RIGHT)
-				{
-					pad_event = 1;
-					buttons_state &= ~M_RIGHT;
-				}
-
-				if (paddata.BTN_R1)
-				{
-					pad_event = 1;
-					buttons_state |= M_WHEEL_DOWN;
-				}
-				else if (buttons_state & M_WHEEL_DOWN)
-				{
-					pad_event = 1;
-					buttons_state &= ~M_WHEEL_DOWN;
-				}
-
-				if (paddata.BTN_L1)
-				{
-					pad_event = 1;
-					buttons_state |= M_WHEEL_UP;
-				}
-				else if (buttons_state & M_WHEEL_UP)
-				{
-					pad_event = 1;
-					buttons_state &= ~M_WHEEL_UP;
-				}
-
-				if (paddata.BTN_LEFT)
-				{
-					pad_event = 1;
-					if (x > 0)
-						x-=1;
-				}
-			
-				if (paddata.BTN_RIGHT)
-				{
-					pad_event = 1;
-					if (x < res.width)
-						x+=1;
-				}
-			
-				if (paddata.BTN_UP)
-				{
-					pad_event = 1;
-					if (y > 0)
-						y-=1;
-				}
-			
-				if (paddata.BTN_DOWN)
-				{
-					pad_event = 1;
-					if (y < res.height)
-						y+=1;
-				}
-
-				//RPRINT("ANA_L_H:%u, ANA_L_V:%u\n", paddata.ANA_L_H, paddata.ANA_L_V);
-				if (paddata.ANA_L_H<122)
-				{
-					pad_event = 1;
-					int new_x;
-					int dx = padAnalogDelta(122-paddata.ANA_L_H);
-					new_x = x-dx;
-					if (new_x > 0 && new_x < res.width)
-						x=new_x;
-				}
-				else if(paddata.ANA_L_H>132)
-				{
-					pad_event = 1;
-					int new_x;
-					int dx = padAnalogDelta(paddata.ANA_L_H-132);
-					new_x = x+dx;
-					if (new_x > 0 && new_x < res.width)
-						x=new_x;
-				}
-				if (paddata.ANA_L_V<122)
-				{
-					pad_event = 1;
-					int new_y;
-					int dy = padAnalogDelta(122-paddata.ANA_L_V);
-					new_y = y-dy;
-					if (new_y > 0 && new_y < res.height)
-						y=new_y;
-				}
-				else if(paddata.ANA_L_V>132)
-				{
-					pad_event = 1;
-					int new_y;
-					int dy = padAnalogDelta(paddata.ANA_L_V-132);
-					new_y = y+dy;
-					if (new_y > 0 && new_y < res.height)
-						y=new_y;
-				}
-
-				if (pad_event)
-				{
-					pad_event = 0;
-					request_frame_update=1;
-					RFB_POINTER_EVENT * rpe = (RFB_POINTER_EVENT *)output_msg;
-					rpe->button_mask = buttons_state;
-					rpe->x_position = x;
-					rpe->y_position = y;
-					ret = rfbSendMsg(RFB_PointerEvent, rpe);
-				}
-			}
-			break;
-		}
-#endif
-#ifdef MOUSE_ENABLED
-		// check joystick input events
-		ioMouseGetInfo(&mouseinfo);
-		for(i=0; i<MAX_MICE; i++)
-		{
-			if(mouseinfo.status[0])
-			{
-				ioMouseGetData(i, &mousedata);
-				if (!mousedata.update)
-				{
-					break;	
-				}
-				
-				/*RPRINT("MouseDATA buttons:%u, x_axis:%i, y_axis:%i, wheel:%i, tilt:%i\n",
-					mousedata.buttons,
-					mousedata.x_axis,
-					mousedata.y_axis,
-					mousedata.wheel,
-					mousedata.tilt );
-				*/
-				
-				if (mousedata.buttons==4)
-				{
-					RPRINT("exit on user request\n");
-					vnc_end=1;
-				}
-
-				if (mousedata.buttons==1)
-				{
-					mouse_event = 1;
-					buttons_state |= M_LEFT;
-				}
-				else if (buttons_state & M_LEFT)
-				{
-					mouse_event = 1;
-					buttons_state &= ~M_LEFT;
-				}
-
-				if (mousedata.buttons==2)
-				{
-					mouse_event = 1;
-					buttons_state |= M_RIGHT;
-				}
-				else if (buttons_state & M_RIGHT)
-				{
-					mouse_event = 1;
-					buttons_state &= ~M_RIGHT;
-				}
-
-				if (mousedata.wheel==-1)
-				{
-					mouse_event = 1;
-					buttons_state |= M_WHEEL_DOWN;
-				}
-				else if (buttons_state & M_WHEEL_DOWN)
-				{
-					mouse_event = 1;
-					buttons_state &= ~M_WHEEL_DOWN;
-				}
-
-				if (mousedata.wheel==1)
-				{
-					mouse_event = 1;
-					buttons_state |= M_WHEEL_UP;
-				}
-				else if (buttons_state & M_WHEEL_UP)
-				{
-					mouse_event = 1;
-					buttons_state &= ~M_WHEEL_UP;
-				}
-
-				if (mousedata.x_axis!=0)
-				{
-					mouse_event = 1;
-					int new_x;
-					new_x = x+mousedata.x_axis;
-					if (new_x > 0 && new_x < res.width)
-						x+=mousedata.x_axis;
-				}
-			
-				if (mousedata.y_axis!=0)
-				{
-					mouse_event = 1;
-					int new_y;
-					new_y = y+mousedata.y_axis;
-					if (new_y > 0 && new_y < res.height)
-						y+=mousedata.y_axis;
-				}
-			
-				if (mouse_event)
-				{
-					mouse_event = 0;
-					request_frame_update=1;
-					RFB_POINTER_EVENT * rpe = (RFB_POINTER_EVENT *)output_msg;
-					rpe->button_mask = buttons_state;
-					rpe->x_position = x;
-					rpe->y_position = y;
-					ret = rfbSendMsg(RFB_PointerEvent, rpe);
-				}
-			}
-			break;
-		}
-#endif
-
-		if (vnc_end || (request_frame_update && !frame_update_requested))
-		{
-			frame_update_requested=1;
-			request_frame_update=0;
-			// request framebuffer update
-			RFB_FRAMEBUFFER_UPDATE_REQUEST * rfbur = (RFB_FRAMEBUFFER_UPDATE_REQUEST *)output_msg;
-			rfbur->incremental = 1;
-			rfbur->x_position = 0;
-			rfbur->y_position = 0;
-			rfbur->width = rfb_info.server_init_msg.framebuffer_width;
-			rfbur->height = rfb_info.server_init_msg.framebuffer_height;
-			ret = rfbSendMsg(RFB_FramebufferUpdateRequest, rfbur);
-			if (ret<0)
-				goto end;
-			RPRINT("requested framebuffer update due to input event\n");
-		}
-		usleep(2000);
-	}
-end:
-	ioKbEnd();
-#ifdef PAD_ENABLED
-	ioPadEnd();
-#endif
-#ifdef MOUSE_ENABLED
-	ioMouseEnd();
-#endif
-	sysThreadExit(0);
+  /* Original update rectangle */
+  ax1 = vncclient->updated_rect.x;
+  ay1 = vncclient->updated_rect.y;
+  ax2 = vncclient->updated_rect.x + vncclient->updated_rect.w;
+  ay2 = vncclient->updated_rect.y + vncclient->updated_rect.h;
+  /* New update rectangle */
+  bx1 = rect->x;
+  by1 = rect->y;
+  bx2 = rect->x + rect->w;
+  by2 = rect->y + rect->h;
+  /* Adjust */
+  if (bx1 < ax1) ax1 = bx1;
+  if (by1 < ay1) ay1 = by1;
+  if (bx2 > ax2) ax2 = bx2;
+  if (by2 > ay2) ay2 = by2;
+  /* Update */
+  vncclient->updated_rect.x = ax1;
+  vncclient->updated_rect.y = ay1;
+  vncclient->updated_rect.w = ax2 - ax1;
+  vncclient->updated_rect.h = ay2 - ay1;
 }
 
-
-int padAnalogDelta(int value){
-	int ret=0;
-
-	if (value<5)
-		ret=0;
-	else if (value<30)
-		ret=1;
-	else if (value<60)
-		ret=2;
-	else
-		ret=3;
-	return ret;
-}
-
-#ifdef PAD_ENABLED
-static void	vibratePad(void)
-{
-	padActParam actparam;
-	actparam.small_motor = 1;
-	actparam.large_motor = 0;
-	ioPadSetActDirect(0, &actparam);
-	usleep(500000);
-	actparam.small_motor = 0;
-	ioPadSetActDirect(0, &actparam);
-}
-#endif
-
-static int handleRectangle(void)
+static int handleRectangle(struct vnc_client *vncclient)
 {
 	int ret=0;
-	int bpp, bpw, rfb_bpw;
+	SDL_Surface *scratchbuffer;
+	SDL_Rect rect;
+	int bpp;
 	RFB_FRAMEBUFFER_UPDATE_RECTANGLE rfbur;
 	
-	RPRINT("START_F:handleRectangle\n");
+	remotePrint("handleRectangle\n");
 
 	ret = rfbGetRectangleInfo(&rfbur);
 	if (ret<0)
 		goto end;
 	
-	RPRINT("update rectangle: encoding_type:%d, width:%d, height:%d, x_position:%d, y_position:%d\n",
+	remotePrint("update rectangle: encoding_type:%d, width:%d, height:%d, x_position:%d, y_position:%d\n",
 		rfbur.encoding_type,
 		rfbur.width,
 		rfbur.height,
 		rfbur.x_position,
 		rfbur.y_position);
 
-	bpp=rfb_info.server_init_msg.pixel_format.bits_per_pixel/8;
-	bpw=rfbur.width*bpp;
-	rfb_bpw = rfb_info.server_init_msg.framebuffer_width*bpp;
+	rect.x = rfbur.x_position;
+	rect.y = rfbur.y_position;
+	rect.w = rfbur.width;
+	rect.h = rfbur.height;
+	grow_updated_region(vncclient, &rect); 
+
+	bpp=vncclient->rfb_info.server_init_msg.pixel_format.bits_per_pixel/8;
 
 	switch (rfbur.encoding_type)
 	{
 		case RFB_Raw:
 			{
-				RPRINT("START_B:RFB_Raw\n");
+				remotePrint("RFB_Raw\n");
 				unsigned char * dest;
-				int h;
-				dest = raw_pixel_data + rfbur.y_position*rfb_bpw + rfbur.x_position*bpp;
-				for(h = 0; h < rfbur.height; h++)
+				
+				scratchbuffer = SDL_CreateRGBSurface(SDL_SWSURFACE, rect.w, rect.h,
+					vncclient->rfb_info.server_init_msg.pixel_format.bits_per_pixel,
+          vncclient->rmask, vncclient->gmask, vncclient->bmask, vncclient->amask);
+        if (scratchbuffer) {                                  
+         SDL_SetAlpha(scratchbuffer,0,0);
+         remotePrint("created scratchbuffer.\n");
+        } else {
+					remotePrint("failed to create scratchbuffer.\n");
+					ret = -1;
+					goto end;
+        }
+				dest = scratchbuffer->pixels;
+				ret = rfbGetBytes(dest, rect.w * rect.h * bpp);
+				if (ret<0)
 				{
-					ret = rfbGetBytes(dest, bpw);
-					if (ret<0)
-					{
-						RPRINT("failed to get line of %d pixels\n", bpw);
-						goto end;
-					}
-					dest+=rfb_bpw;
+					remotePrint("failed to %d pixels\n", rect.w * rect.h * bpp);
+					goto end;
 				}
-				RPRINT("END_B:RFB_Raw\n");
+				SDL_BlitSurface(scratchbuffer, NULL, vncclient->framebuffer, &rect);
+				SDL_FreeSurface(scratchbuffer);
+				remotePrint("blitted scratchbuffer to framebuffer\n");
 			}
 			break;
 
 		case RFB_CopyRect:
 			{
-				RPRINT("START_B:RFB_CopyRect\n");
+				remotePrint("RFB_CopyRect\n");
 				RFB_COPYRECT_INFO rci;
-				unsigned char * src;
-				unsigned char * dest;
-				int h;
+				SDL_Rect src_rect;
 				ret = rfbGetBytes((unsigned char *)&rci, sizeof(RFB_COPYRECT_INFO));
 				if (ret<0)
 				{
-					RPRINT("failed to get RFB_COPYRECT_INFO\n");
+					remotePrint("failed to get RFB_COPYRECT_INFO\n");
 					goto end;
 				}
-				
-				src = old_raw_pixel_data + rfb_bpw * rci.src_y_position + rci.src_x_position * bpp;
-				dest = raw_pixel_data + rfb_bpw * rfbur.y_position + rfbur.x_position * bpp; 
-
-				for(h = 0; h < rfbur.height; h++)
-				{
-					memcpy((void*)dest, (void*)src, bpw);
-					src += rfb_bpw; 
-					dest+= rfb_bpw;
-				}
-				RPRINT("END_B:RFB_CopyRect\n");
+				src_rect.x = rci.src_x_position;
+				src_rect.y = rci.src_y_position;
+				src_rect.w = rfbur.width;
+				src_rect.h = rfbur.height;
+				blitFromDisplay(vncclient->framebuffer, &src_rect, &rect);
 			}
 			break;
+#if 0
 		case RFB_RRE:
 			{
-				ret=HandleRRERectangles(&rfbur, bpp, bpw, rfb_bpw);
+				ret=handleRRERectangles(vncclient, &rfbur, bpp, bpw, rfb_bpw);
 			}
 			break;
+#endif
 		default:
-			RPRINT("unsupported encoding type:%d\n", rfbur.encoding_type);
+			remotePrint("unsupported encoding type:%d\n", rfbur.encoding_type);
 			ret = -1;
 			goto end;
 	}
 
 end:
-	RPRINT("END_F:handleRectangle\n");
 	return ret;
 }
-
-static int HandleRRERectangles(const RFB_FRAMEBUFFER_UPDATE_RECTANGLE * rfbur,
+#if 0
+static int handleRRERectangles(struct vnc_client * vncclient, const RFB_FRAMEBUFFER_UPDATE_RECTANGLE * rfbur,
 	int bpp, int bpw, int rfb_bpw)
 {
 	int ret=0;
@@ -1158,21 +743,21 @@ static int HandleRRERectangles(const RFB_FRAMEBUFFER_UPDATE_RECTANGLE * rfbur,
 	unsigned short * tmp_pshort;
 	unsigned int * tmp_pint;
 	
-	RPRINT("START_F:HandleRRERectangles\n");
+	remotePrint("handleRRERectangles\n");
 
 	ret = rfbGetBytes(header, 4 + bpp);
 	if (ret<0)
 	{
-		RPRINT("failed to get header\n");
+		remotePrint("failed to get header\n");
 		goto end;
 	}
 	
 	tmp_pint = (unsigned int *)header;
 	nb_sub_rectangles = *tmp_pint;
 
-	dest = raw_pixel_data + rfbur->y_position*rfb_bpw + rfbur->x_position*bpp;
+	dest = vncclient->raw_pixel_data + rfbur->y_position*rfb_bpw + rfbur->x_position*bpp;
 
-	RPRINT("%u sub-rectangles to draw\n", nb_sub_rectangles);
+	remotePrint("%u sub-rectangles to draw\n", nb_sub_rectangles);
 
 	switch (bpp)
 	{
@@ -1200,9 +785,9 @@ static int HandleRRERectangles(const RFB_FRAMEBUFFER_UPDATE_RECTANGLE * rfbur,
 					vector unsigned short * v_dest = (vector unsigned short*)dest;
 					int v_width = rfbur->width/8;
 					int vrest_width = rfbur->width%8;
-					int vres_width = rfb_info.server_init_msg.framebuffer_width/8;
+					int vres_width = vncclient->rfb_info.server_init_msg.framebuffer_width/8;
 
-					RPRINT("use altivec to draw background color [%x]\n", bg_pixel_value);
+					remotePrint("use altivec to draw background color [%x]\n", bg_pixel_value);
 					for (h=0;h<rfbur->height;h++)
 					{
 						for(w=0;w<v_width;w++)
@@ -1221,7 +806,7 @@ static int HandleRRERectangles(const RFB_FRAMEBUFFER_UPDATE_RECTANGLE * rfbur,
 							{
 								start[w]=bg_pixel_value;
 							}
-							start+=rfb_info.server_init_msg.framebuffer_width;
+							start+=vncclient->rfb_info.server_init_msg.framebuffer_width;
 						}
 					}
 					
@@ -1235,11 +820,11 @@ static int HandleRRERectangles(const RFB_FRAMEBUFFER_UPDATE_RECTANGLE * rfbur,
 						{
 							start[w]=bg_pixel_value;
 						}	
-						start+=rfb_info.server_init_msg.framebuffer_width;
+						start+=vncclient->rfb_info.server_init_msg.framebuffer_width;
 					}
 				}
 
-				RPRINT("draw sub rectangles\n");
+				remotePrint("draw sub rectangles\n");
 
 				// then, draw sub rectangles
 				for (sr=0;sr<nb_sub_rectangles;sr++)
@@ -1247,7 +832,7 @@ static int HandleRRERectangles(const RFB_FRAMEBUFFER_UPDATE_RECTANGLE * rfbur,
 					ret = rfbGetBytes(subrect_info, 8 + bpp);
 					if (ret<0)
 					{
-						RPRINT("failed to get sub rect info\n");
+						remotePrint("failed to get sub rect info\n");
 						goto end;
 					}
 
@@ -1263,7 +848,7 @@ static int HandleRRERectangles(const RFB_FRAMEBUFFER_UPDATE_RECTANGLE * rfbur,
 						{
 							start[w]=subrect_pixel_value;
 						}	
-						start+=rfb_info.server_init_msg.framebuffer_width;
+						start+=vncclient->rfb_info.server_init_msg.framebuffer_width;
 					}
 				}
 			}
@@ -1285,7 +870,7 @@ static int HandleRRERectangles(const RFB_FRAMEBUFFER_UPDATE_RECTANGLE * rfbur,
 					{
 						start[w]=bg_pixel_value;
 					}	
-					start+=rfb_info.server_init_msg.framebuffer_width;
+					start+=vncclient->rfb_info.server_init_msg.framebuffer_width;
 				}
 
 				for (sr=0;sr<nb_sub_rectangles;sr++)
@@ -1293,7 +878,7 @@ static int HandleRRERectangles(const RFB_FRAMEBUFFER_UPDATE_RECTANGLE * rfbur,
 					ret = rfbGetBytes(subrect_info, 8 + bpp);
 					if (ret<0)
 					{
-						RPRINT("failed to get sub rect info\n");
+						remotePrint("failed to get sub rect info\n");
 						goto end;
 					}
 
@@ -1309,41 +894,18 @@ static int HandleRRERectangles(const RFB_FRAMEBUFFER_UPDATE_RECTANGLE * rfbur,
 						{
 							start[w]=subrect_pixel_value;
 						}	
-						start+=rfb_info.server_init_msg.framebuffer_width;
+						start+=vncclient->rfb_info.server_init_msg.framebuffer_width;
 					}
 				}
 			}
 			break;
 
 		default:
-			RPRINT("invalid bpp\n");
+			remotePrint("invalid bpp\n");
 			goto end;
 	}
 
 end:
-	RPRINT("END_F:HandleRRERectangles\n");
 	return ret;
 }
-
-static void pstermRefresh(void * arg)
-{
-	while(!vnc_end && !psprint_end)
-	{
-		usleep(100000);
-
-		if(sysMutexLock(display_mutex, 0)==0)
-		{
-			PSTermDraw (&psterm);
-			waitFlip();
-			draw32bppRectangleToScreen(
-						(unsigned int*)psterm.pixel_buf,
-						(unsigned int)psterm.pixel_width,
-						(unsigned int)psterm.pixel_height,
-						0, 0);
-			updateDisplay();
-			
-			sysMutexUnlock(display_mutex);
-		}
-	}
-	sysThreadExit(0);
-}
+#endif

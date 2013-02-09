@@ -30,6 +30,9 @@ struct vnc_client {
 	unsigned int gmask;
 	unsigned int bmask;
 	unsigned int amask;
+	unsigned int rshift;
+	unsigned int gshift;
+	unsigned int bshift;
 };
 
 // functions prototypes
@@ -39,10 +42,7 @@ static int init(struct vnc_client *vncclient);
 static int requestUpdate(void * data);
 static int handleMsgs(void * data);
 static int handleRectangle(struct vnc_client *vncclient);
-#if 0
-static int handleRRERectangles(struct vnc_client *vncclient, 
-	const RFB_FRAMEBUFFER_UPDATE_RECTANGLE *, int, int, int);
-#endif
+static int handleRRERectangles(struct vnc_client * vncclient, SDL_Rect *rect);
 static int key_event(struct vnc_client *vncclient,
 	unsigned char downflag, unsigned int key);
 static int pointer_event(struct vnc_client *vncclient,
@@ -445,16 +445,21 @@ static int init(struct vnc_client * vncclient)
 		goto end;
 	}
 	
-	// check bpp & depth
-	// FIXME: in theory, every pixel format should be supported ...
-	// moreover, should be possible to send prefered PIXEL FORMAT to server
 	if (vncclient->rfb_info.server_init_msg.pixel_format.bits_per_pixel==32 &&
 			vncclient->rfb_info.server_init_msg.pixel_format.depth==24)
 	{
-    vncclient->rmask = 0xff000000;
-    vncclient->gmask = 0x00ff0000;
-    vncclient->bmask = 0x0000ff00;
-    vncclient->amask = 0x000000ff;
+		vncclient->rshift = 24 - vncclient->rfb_info.server_init_msg.pixel_format.red_shift;
+		vncclient->gshift = 24 - vncclient->rfb_info.server_init_msg.pixel_format.green_shift;
+		vncclient->bshift = 24 - vncclient->rfb_info.server_init_msg.pixel_format.blue_shift;
+
+    vncclient->rmask =
+			vncclient->rfb_info.server_init_msg.pixel_format.red_max << vncclient->rshift;
+		vncclient->gmask =
+			vncclient->rfb_info.server_init_msg.pixel_format.green_max << vncclient->gshift;
+		vncclient->bmask =
+			vncclient->rfb_info.server_init_msg.pixel_format.blue_max << vncclient->bshift;
+		vncclient->amask = 0x000000ff;
+
 		vncclient->framebuffer = SDL_CreateRGBSurface(SDL_SWSURFACE,
 			vncclient->rfb_info.server_init_msg.framebuffer_width,
 			vncclient->rfb_info.server_init_msg.framebuffer_height,
@@ -508,13 +513,8 @@ static int init(struct vnc_client * vncclient)
 	// now send supported encodings formats
 	{
 		RFB_SET_ENCODINGS * rse = (RFB_SET_ENCODINGS *)vncclient->output_msg;
-#if 0
 		rse->number_of_encodings = 3;
 		int encoding_type[3] = {RFB_RRE, RFB_CopyRect, RFB_Raw};
-#else
-		rse->number_of_encodings = 2;
-		int encoding_type[2] = {RFB_CopyRect, RFB_Raw};
-#endif
 		rse->encoding_type = encoding_type;
 		ret = rfbSendMsg(RFB_SetEncodings, rse);
 	}
@@ -718,13 +718,13 @@ static int handleRectangle(struct vnc_client *vncclient)
 				blitFromDisplay(vncclient->framebuffer, &src_rect, &rect);
 			}
 			break;
-#if 0
 		case RFB_RRE:
 			{
-				ret=handleRRERectangles(vncclient, &rfbur, bpp, bpw, rfb_bpw);
+				ret=handleRRERectangles(vncclient, &rect);
+				if (ret<0)
+					goto end;
 			}
 			break;
-#endif
 		default:
 			remotePrint("unsupported encoding type:%d\n", rfbur.encoding_type);
 			ret = -1;
@@ -734,184 +734,67 @@ static int handleRectangle(struct vnc_client *vncclient)
 end:
 	return ret;
 }
-#if 0
-static int handleRRERectangles(struct vnc_client * vncclient, const RFB_FRAMEBUFFER_UPDATE_RECTANGLE * rfbur,
-	int bpp, int bpw, int rfb_bpw)
+
+static int handleRRERectangles(struct vnc_client * vncclient, SDL_Rect *rect)
 {
 	int ret=0;
-	unsigned char header[8];
-	unsigned char subrect_info[12];
+	unsigned char buf[12];
+	int bits_pp, bytes_pp, i;
 	unsigned int nb_sub_rectangles;
-	int sr, w, h;
-	unsigned char * dest;
+	unsigned int *tmp_pint;
+	unsigned int bg_pixel_value;
+	unsigned int subrect_pixel_value;
 	RFB_RRE_SUBRECT_INFO * rrsi;
+	SDL_Rect sub_rect;
 
-	unsigned short * tmp_pshort;
-	unsigned int * tmp_pint;
-	
-	remotePrint("handleRRERectangles\n");
+	bits_pp = vncclient->rfb_info.server_init_msg.pixel_format.bits_per_pixel;
+	bytes_pp = bits_pp/8;
+	remotePrint("bits_pp:%i, bytes_pp:%i\n", bits_pp, bytes_pp);
 
-	ret = rfbGetBytes(header, 4 + bpp);
+	ret = rfbGetBytes(buf, 4 + bytes_pp);
 	if (ret<0)
 	{
 		remotePrint("failed to get header\n");
 		goto end;
 	}
-	
-	tmp_pint = (unsigned int *)header;
+	tmp_pint = (unsigned int *)buf;
 	nb_sub_rectangles = *tmp_pint;
+	remotePrint("%u sub-rectangles\n", nb_sub_rectangles);
+	
+	tmp_pint = (unsigned int *)(buf+4);
+	if (bits_pp < 24)
+		bg_pixel_value = *tmp_pint >> bits_pp;
+	else
+		bg_pixel_value = *tmp_pint;
 
-	dest = vncclient->raw_pixel_data + rfbur->y_position*rfb_bpw + rfbur->x_position*bpp;
-
-	remotePrint("%u sub-rectangles to draw\n", nb_sub_rectangles);
-
-	switch (bpp)
-	{
-		case 2: // 16 bits per pixel
-			{
-				unsigned short bg_pixel_value;
-				unsigned short subrect_pixel_value;
-				unsigned short * start;
-			
-				tmp_pshort = (unsigned short *)(header+4);
-				bg_pixel_value = *tmp_pshort;
-
-				//first, draw background color
-				if ( (((unsigned long)dest & 0xF)==0) && (rfbur->width>=8) ) // address must be 16bytes aligned and pixel width >= 8
-				{
-					// use altivec
-					vector unsigned short v_bg_pixel_value = (vector unsigned short){bg_pixel_value,
-																																					 bg_pixel_value,
-																																					 bg_pixel_value,
-																																					 bg_pixel_value,
-																																					 bg_pixel_value,
-																																					 bg_pixel_value,
-																																					 bg_pixel_value,
-																																					 bg_pixel_value};
-					vector unsigned short * v_dest = (vector unsigned short*)dest;
-					int v_width = rfbur->width/8;
-					int vrest_width = rfbur->width%8;
-					int vres_width = vncclient->rfb_info.server_init_msg.framebuffer_width/8;
-
-					remotePrint("use altivec to draw background color [%x]\n", bg_pixel_value);
-					for (h=0;h<rfbur->height;h++)
-					{
-						for(w=0;w<v_width;w++)
-						{
-							v_dest[w]=v_bg_pixel_value;
-						}
-						v_dest+=vres_width;
-					}
-
-					if (vrest_width)
-					{
-						start = (unsigned short*)(dest+v_width*16);
-						for(h=0;h<rfbur->height;h++)
-						{
-							for(w = 0; w < vrest_width; w++)
-							{
-								start[w]=bg_pixel_value;
-							}
-							start+=vncclient->rfb_info.server_init_msg.framebuffer_width;
-						}
-					}
-					
-				}
-				else // use scalar
-				{
-					start = (unsigned short *)dest;
-					for (h=0;h<rfbur->height;h++)
-					{
-						for(w=0;w<rfbur->width;w++)
-						{
-							start[w]=bg_pixel_value;
-						}	
-						start+=vncclient->rfb_info.server_init_msg.framebuffer_width;
-					}
-				}
-
-				remotePrint("draw sub rectangles\n");
-
-				// then, draw sub rectangles
-				for (sr=0;sr<nb_sub_rectangles;sr++)
-				{
-					ret = rfbGetBytes(subrect_info, 8 + bpp);
-					if (ret<0)
-					{
-						remotePrint("failed to get sub rect info\n");
-						goto end;
-					}
-
-					tmp_pshort = (unsigned short *)subrect_info;
-					subrect_pixel_value = *tmp_pshort;
-					rrsi = (RFB_RRE_SUBRECT_INFO *)(subrect_info+bpp);
-
-					start=(unsigned short*)(dest + rrsi->y_position*rfb_bpw + rrsi->x_position*bpp);
-
-					for (h=0;h<rrsi->height;h++)	// FIXME: use Altivec here !
-					{
-						for(w=0;w<rrsi->width;w++)
-						{
-							start[w]=subrect_pixel_value;
-						}	
-						start+=vncclient->rfb_info.server_init_msg.framebuffer_width;
-					}
-				}
-			}
-			break;
-		case 4: // 32 bits per pixel
-			{
-				unsigned int bg_pixel_value;
-				unsigned int subrect_pixel_value;
-				unsigned int * start;
-				
-				tmp_pint = (unsigned int *)(header+4);
-				bg_pixel_value = *tmp_pint;
-				start = (unsigned int *)dest;
-
-				//first, draw background color
-				for (h=0;h<rfbur->height;h++)	// FIXME: use Altivec here !
-				{
-					for(w=0;w<rfbur->width;w++)
-					{
-						start[w]=bg_pixel_value;
-					}	
-					start+=vncclient->rfb_info.server_init_msg.framebuffer_width;
-				}
-
-				for (sr=0;sr<nb_sub_rectangles;sr++)
-				{
-					ret = rfbGetBytes(subrect_info, 8 + bpp);
-					if (ret<0)
-					{
-						remotePrint("failed to get sub rect info\n");
-						goto end;
-					}
-
-					tmp_pint = (unsigned int *)subrect_info;
-					subrect_pixel_value = *tmp_pint;
-					rrsi = (RFB_RRE_SUBRECT_INFO *)(subrect_info+bpp);
-
-					start=(unsigned int*)(dest + rrsi->y_position*rfb_bpw + rrsi->x_position*bpp);
-
-					for (h=0;h<rrsi->height;h++)	// FIXME: use Altivec here !
-					{
-						for(w=0;w<rrsi->width;w++)
-						{
-							start[w]=subrect_pixel_value;
-						}	
-						start+=vncclient->rfb_info.server_init_msg.framebuffer_width;
-					}
-				}
-			}
-			break;
-
-		default:
-			remotePrint("invalid bpp\n");
-			goto end;
+	ret = SDL_FillRect(vncclient->framebuffer, rect, bg_pixel_value);
+	if (ret<0) {
+		remotePrint("failed to fill background rectangle\n");
+		goto end;
 	}
 
+	for (i=0;i<nb_sub_rectangles;i++) {
+		ret = rfbGetBytes(buf, 8 + bytes_pp);
+		if (ret<0) {
+			remotePrint("failed to get sub rect info\n");
+			goto end;
+		}
+		tmp_pint = (unsigned int *)buf;
+		if (bits_pp < 24)
+			subrect_pixel_value = *tmp_pint >> bits_pp;
+		else
+			subrect_pixel_value = *tmp_pint;
+		rrsi = (RFB_RRE_SUBRECT_INFO *)(buf+bytes_pp);
+		sub_rect.x = rect->x + rrsi->x_position;
+		sub_rect.y = rect->y + rrsi->y_position;
+		sub_rect.w = rrsi->width;
+		sub_rect.h = rrsi->height;
+		ret = SDL_FillRect(vncclient->framebuffer, &sub_rect, subrect_pixel_value);
+		if (ret<0) {
+			remotePrint("failed to fill sub-rectangle %i\n", i);
+			goto end;
+		}
+	}
 end:
 	return ret;
 }
-#endif

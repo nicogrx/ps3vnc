@@ -179,6 +179,15 @@ typedef struct
 	unsigned short height;
 } RFB_RRE_SUBRECT_INFO;
 
+enum Hextile_subencoding_mask
+{
+	Hextile_Raw = 1,
+	Hextile_BackgroundSpecified = 2,
+	Hextile_ForegroundSpecified = 4,
+	Hextile_AnySubrects = 8,
+	Hextile_SubrectsColoured = 16
+};
+
 typedef struct
 {	
 	unsigned char msg_type;

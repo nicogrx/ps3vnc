@@ -34,6 +34,8 @@ struct vnc_client {
 	unsigned int rshift;
 	unsigned int gshift;
 	unsigned int bshift;
+	unsigned int bits_pp;
+	unsigned int bytes_pp;
 };
 
 // functions prototypes
@@ -44,6 +46,7 @@ static int requestUpdate(void * data);
 static int handleMsgs(void * data);
 static int handleRectangle(struct vnc_client *vncclient);
 static int handleRRERectangles(struct vnc_client * vncclient, SDL_Rect *rect);
+static int handleHextileRectangles(struct vnc_client * vncclient, SDL_Rect *rect);
 static int key_event(struct vnc_client *vncclient,
 	unsigned char downflag, unsigned int key);
 static int pointer_event(struct vnc_client *vncclient,
@@ -457,7 +460,10 @@ static int init(struct vnc_client * vncclient)
 		ret=-1;
 		goto end;
 	}
-	
+
+	vncclient->bits_pp = vncclient->rfb_info.server_init_msg.pixel_format.bits_per_pixel;
+	vncclient->bytes_pp = vncclient->rfb_info.server_init_msg.pixel_format.bits_per_pixel / 8;
+
 	if (vncclient->rfb_info.server_init_msg.pixel_format.bits_per_pixel==32 &&
 			vncclient->rfb_info.server_init_msg.pixel_format.depth==24)
 	{
@@ -526,8 +532,13 @@ static int init(struct vnc_client * vncclient)
 	// now send supported encodings formats
 	{
 		RFB_SET_ENCODINGS * rse = (RFB_SET_ENCODINGS *)vncclient->output_msg;
+#if 0
 		rse->number_of_encodings = 3;
-		int encoding_type[3] = {RFB_RRE, RFB_CopyRect, RFB_Raw};
+		int encoding_type[3] = { RFB_RRE, RFB_CopyRect, RFB_Raw };
+#else
+		rse->number_of_encodings = 4;
+		int encoding_type[4] = { RFB_Hextile, RFB_RRE, RFB_CopyRect, RFB_Raw };
+#endif
 		rse->encoding_type = encoding_type;
 		ret = rfbSendMsg(RFB_SetEncodings, rse);
 	}
@@ -661,7 +672,6 @@ static int handleRectangle(struct vnc_client *vncclient)
 	int ret=0;
 	SDL_Surface *scratchbuffer;
 	SDL_Rect rect;
-	int bpp;
 	RFB_FRAMEBUFFER_UPDATE_RECTANGLE rfbur;
 	
 	remotePrint("handleRectangle\n");
@@ -683,8 +693,6 @@ static int handleRectangle(struct vnc_client *vncclient)
 	rect.h = rfbur.height;
 	grow_updated_region(vncclient, &rect); 
 
-	bpp=vncclient->rfb_info.server_init_msg.pixel_format.bits_per_pixel/8;
-
 	switch (rfbur.encoding_type)
 	{
 		case RFB_Raw:
@@ -692,8 +700,7 @@ static int handleRectangle(struct vnc_client *vncclient)
 				remotePrint("RFB_Raw\n");
 				
 				scratchbuffer = SDL_CreateRGBSurface(SDL_SWSURFACE, rect.w, rect.h,
-					vncclient->rfb_info.server_init_msg.pixel_format.bits_per_pixel,
-          vncclient->rmask, vncclient->gmask, vncclient->bmask, vncclient->amask);
+					vncclient->bits_pp, vncclient->rmask, vncclient->gmask, vncclient->bmask, vncclient->amask);
         if (scratchbuffer) {                                  
          SDL_SetAlpha(scratchbuffer,0,0);
          remotePrint("created scratchbuffer.\n");
@@ -702,10 +709,10 @@ static int handleRectangle(struct vnc_client *vncclient)
 					ret = -1;
 					goto end;
         }
-				ret = rfbGetBytes(scratchbuffer->pixels, rect.w * rect.h * bpp);
+				ret = rfbGetBytes(scratchbuffer->pixels, rect.w * rect.h * vncclient->bytes_pp);
 				if (ret<0)
 				{
-					remotePrint("failed to %d pixels\n", rect.w * rect.h * bpp);
+					remotePrint("failed to get %d pixels\n", rect.w * rect.h * vncclient->bytes_pp);
 					goto end;
 				}
 				SDL_BlitSurface(scratchbuffer, NULL, vncclient->framebuffer, &rect);
@@ -739,6 +746,13 @@ static int handleRectangle(struct vnc_client *vncclient)
 					goto end;
 			}
 			break;
+		case RFB_Hextile:
+			{
+				ret=handleHextileRectangles(vncclient, &rect);
+				if (ret<0)
+					goto end;
+			}
+			break;
 		default:
 			remotePrint("unsupported encoding type:%d\n", rfbur.encoding_type);
 			ret = -1;
@@ -752,34 +766,30 @@ end:
 static int handleRRERectangles(struct vnc_client * vncclient, SDL_Rect *rect)
 {
 	int ret=0;
+	int i;
 	unsigned char buf[12];
-	int bits_pp, bytes_pp, i;
 	unsigned int nb_sub_rectangles;
-	unsigned int *tmp_pint;
 	unsigned int bg_pixel_value;
 	unsigned int subrect_pixel_value;
+	unsigned int *tmp;
 	RFB_RRE_SUBRECT_INFO * rrsi;
 	SDL_Rect sub_rect;
 
-	bits_pp = vncclient->rfb_info.server_init_msg.pixel_format.bits_per_pixel;
-	bytes_pp = bits_pp/8;
-	remotePrint("bits_pp:%i, bytes_pp:%i\n", bits_pp, bytes_pp);
-
-	ret = rfbGetBytes(buf, 4 + bytes_pp);
+	ret = rfbGetBytes(buf, 4 + vncclient->bytes_pp);
 	if (ret<0)
 	{
 		remotePrint("failed to get header\n");
 		goto end;
 	}
-	tmp_pint = (unsigned int *)buf;
-	nb_sub_rectangles = *tmp_pint;
+	tmp = (unsigned int *)buf;
+	nb_sub_rectangles = *tmp;
 	remotePrint("%u sub-rectangles\n", nb_sub_rectangles);
 	
-	tmp_pint = (unsigned int *)(buf+4);
-	if (bits_pp < 24)
-		bg_pixel_value = *tmp_pint >> bits_pp;
+	tmp = (unsigned int *)(buf+4);
+	if (vncclient->bits_pp <= 16)
+		bg_pixel_value = *tmp >> vncclient->bits_pp;
 	else
-		bg_pixel_value = *tmp_pint;
+		bg_pixel_value = *tmp;
 
 	ret = SDL_FillRect(vncclient->framebuffer, rect, bg_pixel_value);
 	if (ret<0) {
@@ -788,17 +798,17 @@ static int handleRRERectangles(struct vnc_client * vncclient, SDL_Rect *rect)
 	}
 
 	for (i=0;i<nb_sub_rectangles;i++) {
-		ret = rfbGetBytes(buf, 8 + bytes_pp);
+		ret = rfbGetBytes(buf, 8 + vncclient->bytes_pp);
 		if (ret<0) {
 			remotePrint("failed to get sub rect info\n");
 			goto end;
 		}
-		tmp_pint = (unsigned int *)buf;
-		if (bits_pp < 24)
-			subrect_pixel_value = *tmp_pint >> bits_pp;
+		tmp = (unsigned int *)buf;
+		if (vncclient->bits_pp <= 16)
+			subrect_pixel_value = *tmp >> vncclient->bits_pp;
 		else
-			subrect_pixel_value = *tmp_pint;
-		rrsi = (RFB_RRE_SUBRECT_INFO *)(buf+bytes_pp);
+			subrect_pixel_value = *tmp;
+		rrsi = (RFB_RRE_SUBRECT_INFO *)(buf+vncclient->bytes_pp);
 		sub_rect.x = rect->x + rrsi->x_position;
 		sub_rect.y = rect->y + rrsi->y_position;
 		sub_rect.w = rrsi->width;
@@ -809,6 +819,187 @@ static int handleRRERectangles(struct vnc_client * vncclient, SDL_Rect *rect)
 			goto end;
 		}
 	}
+end:
+	return ret;
+}
+static int handleHextileRectangles(struct vnc_client * vncclient, SDL_Rect *rect)
+{
+	int ret=0;
+	int nb_16x16_tiles_in_row;
+	int nb_16x16_tiles_in_column;
+	int last_tile_width;
+	int last_tile_height;
+	int r, c;
+	unsigned int *tmp;
+	unsigned int bg_pixel_value;
+	unsigned int fg_pixel_value;
+	unsigned int subrect_pixel_value;
+	unsigned char nb_sub_rectangles, s;
+	unsigned char subencoding;
+	unsigned char buf[6];
+	unsigned char sub_rect_xy;
+	unsigned char sub_rect_wh;
+	SDL_Rect tile_rect;
+	SDL_Rect sub_rect;
+	SDL_Surface *scratchbuffer = NULL;
+
+	bg_pixel_value = 0;
+	fg_pixel_value = 0;
+
+	last_tile_width = rect->w % 16;
+	last_tile_height = rect->h % 16;
+	nb_16x16_tiles_in_row = rect->w / 16;
+	nb_16x16_tiles_in_column = rect->h / 16;
+
+	remotePrint("Hextile encoding: %i of 16x16 tiles in one row, last tile width = %i\n",
+		nb_16x16_tiles_in_row, last_tile_width);
+	remotePrint("Hextile encoding: %i of 16x16 tiles in one column, last tile column = %i\n",
+		nb_16x16_tiles_in_column, last_tile_height);
+
+	for (c = 0; c < (nb_16x16_tiles_in_column + (last_tile_height ? 1:0)); c++) {
+		for (r = 0; r < (nb_16x16_tiles_in_row + (last_tile_width ? 1:0)); r++) {
+				
+			tile_rect.x = rect->x + r * 16;
+			tile_rect.y = rect->y + c * 16;
+			if (r == nb_16x16_tiles_in_row)
+				tile_rect.w = last_tile_width;
+			else
+				tile_rect.w = 16;
+			if (c == nb_16x16_tiles_in_column)
+				tile_rect.h = last_tile_height;
+			else
+				tile_rect.h = 16;
+
+			ret = rfbGetBytes(&subencoding, 1);
+			if (ret<0)
+			{
+				remotePrint("failed to get tile subencoding\n");
+				goto end;
+			}
+
+			if (subencoding & Hextile_Raw) {
+				scratchbuffer = SDL_CreateRGBSurface(SDL_SWSURFACE, tile_rect.w, tile_rect.h,
+					vncclient->bits_pp, vncclient->rmask, vncclient->gmask, vncclient->bmask, vncclient->amask);
+        if (scratchbuffer)
+         SDL_SetAlpha(scratchbuffer,0,0);
+        else {
+					remotePrint("raw tile [%i,%i]: failed to create scratchbuffer.\n", r, c);
+					ret = -1;
+					goto end;
+        }
+				ret = rfbGetBytes(scratchbuffer->pixels, tile_rect.w * tile_rect.h * vncclient->bytes_pp);
+				if (ret<0)
+				{
+					remotePrint("raw tile [%i,%i]: failed to get %i pixels\n", r, c,
+						tile_rect.w * tile_rect.h * vncclient->bytes_pp);
+					goto end;
+				}
+				SDL_BlitSurface(scratchbuffer, NULL, vncclient->framebuffer, &tile_rect);
+				SDL_FreeSurface(scratchbuffer);
+				continue;
+			}
+
+			if (subencoding & Hextile_BackgroundSpecified) {
+				ret = rfbGetBytes(buf, vncclient->bytes_pp);
+				if (ret<0)
+				{
+					remotePrint("tile [%i,%i]: failed to get hextile background color\n", r, c);
+					goto end;
+				}
+				tmp = (unsigned int *)buf;
+				if (vncclient->bits_pp <= 16)
+					bg_pixel_value = *tmp >> vncclient->bits_pp;
+				else
+					bg_pixel_value = *tmp;
+			}
+
+			/* fill tile with background value */
+			ret = SDL_FillRect(vncclient->framebuffer, &tile_rect, bg_pixel_value);
+			if (ret<0) {
+				remotePrint("tile [%i,%i]: failed to fill background\n", r, c);
+				goto end;
+			}
+
+			if (!(subencoding & Hextile_AnySubrects))
+				continue;
+
+			if (subencoding & Hextile_ForegroundSpecified) {
+				ret = rfbGetBytes(buf, vncclient->bytes_pp);
+				if (ret<0)
+				{
+					remotePrint("tile [%i,%i]: failed to get foreground color\n", r, c);
+					goto end;
+				}
+				tmp = (unsigned int *)buf;
+				if (vncclient->bits_pp <= 16)
+					fg_pixel_value = *tmp >> vncclient->bits_pp;
+				else
+					fg_pixel_value = *tmp;
+
+				if (subencoding & Hextile_SubrectsColoured)
+					remotePrint("tile [%i,%i]: warning, foreground color specified and SubrectsColoured bit is set\n", r, c);
+			}
+
+			/*get number of sub-rectangles */
+			ret = rfbGetBytes(buf, 1);
+			if (ret<0)
+			{
+				remotePrint("tile [%i,%i]: failed to get number of sub-rectangles\n", r, c);
+				goto end;
+			}
+			nb_sub_rectangles = *buf;
+			
+			if (subencoding & Hextile_SubrectsColoured) {
+				for (s = 0; s < nb_sub_rectangles; s++) {
+					ret = rfbGetBytes(buf, vncclient->bytes_pp + 2);
+					if (ret<0)
+					{
+						remotePrint("tile [%i,%i]: sub-rect %u: failed to get datas\n", r, c, s);
+						goto end;
+					}
+					tmp = (unsigned int *)buf;
+					if (vncclient->bits_pp <= 16)
+						subrect_pixel_value = *tmp >> vncclient->bits_pp;
+					else
+						subrect_pixel_value = *tmp;
+
+					sub_rect_xy = *(buf + vncclient->bytes_pp);
+					sub_rect_wh = *(buf + vncclient->bytes_pp + 1);
+					sub_rect.x = tile_rect.x + (sub_rect_xy >> 4);
+					sub_rect.y = tile_rect.y + (sub_rect_xy & 0xF);
+					sub_rect.w = (sub_rect_wh >> 4) + 1;
+					sub_rect.h = (sub_rect_wh & 0xF) + 1;
+					ret = SDL_FillRect(vncclient->framebuffer, &sub_rect, subrect_pixel_value);
+					if (ret<0) {
+						remotePrint("tile [%i,%i]: failed to fill sub rectangle %u\n", r, c, s);
+						goto end;
+					}
+				}
+			} else {
+				for (s = 0; s < nb_sub_rectangles; s++) {
+					ret = rfbGetBytes(buf, 2);
+					if (ret<0)
+					{
+						remotePrint("tile [%i,%i]: failed to get sub-rect %u infos\n", r, c, s);
+						goto end;
+					}
+					sub_rect_xy = *(buf);
+					sub_rect_wh = *(buf + 1);
+					sub_rect.x = tile_rect.x + (sub_rect_xy >> 4);
+					sub_rect.y = tile_rect.y + (sub_rect_xy & 0xF);
+					sub_rect.w = (sub_rect_wh >> 4) + 1;
+					sub_rect.h = (sub_rect_wh & 0xF) + 1;
+					
+					ret = SDL_FillRect(vncclient->framebuffer, &sub_rect, fg_pixel_value);
+					if (ret<0) {
+						remotePrint("tile [%i,%i]: failed to fill sub rectangle %u\n", r, c, s);
+						goto end;
+					}
+				}
+			}
+		}
+	}
+
 end:
 	return ret;
 }

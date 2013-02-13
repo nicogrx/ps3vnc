@@ -498,10 +498,11 @@ static int init(struct vnc_client * vncclient)
     vncclient->rmask = 0xf800;
     vncclient->gmask = 0x7e0;
     vncclient->bmask = 0x1f;
+		vncclient->amask = 0;
 		vncclient->framebuffer = SDL_CreateRGBSurface(SDL_SWSURFACE,
 			vncclient->rfb_info.server_init_msg.framebuffer_width,
 			vncclient->rfb_info.server_init_msg.framebuffer_height,
-			16, vncclient->rmask, vncclient->gmask, vncclient->bmask, 0);
+			16, vncclient->rmask, vncclient->gmask, vncclient->bmask, vncclient->amask);
 		if (vncclient->framebuffer==NULL) {
 			remotePrint("could not create framebuffer:%s.\n", SDL_GetError());
 			ret = -1;
@@ -533,8 +534,8 @@ static int init(struct vnc_client * vncclient)
 	{
 		RFB_SET_ENCODINGS * rse = (RFB_SET_ENCODINGS *)vncclient->output_msg;
 #if 0
-		rse->number_of_encodings = 3;
-		int encoding_type[3] = { RFB_RRE, RFB_CopyRect, RFB_Raw };
+		rse->number_of_encodings = 4;
+		int encoding_type[4] = { RFB_RRE, RFB_Hextile, RFB_CopyRect, RFB_Raw };
 #else
 		rse->number_of_encodings = 4;
 		int encoding_type[4] = { RFB_Hextile, RFB_RRE, RFB_CopyRect, RFB_Raw };

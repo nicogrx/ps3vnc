@@ -12,6 +12,7 @@
 #include "screen.h"
 #include "tick.h"
 #include "remoteprint.h"
+#include "localprint.h"
 
 #define MAX_CHARS 128
 struct vnc_client {
@@ -197,10 +198,12 @@ int main(int argc, const char* argv[])
 	ret = netInitialize();
 	if (ret < 0)
 		return ret;
-
+	
+	localPrintInit();
+	
 	ret = remotePrintConnect("192.168.1.4");
 	if (ret<0)
-		goto net_close;
+		goto lprint_close;
 
 	ret = initDisplay(1920, 1080);
 	if (ret)
@@ -298,7 +301,8 @@ display_close:
 	closeDisplay();
 rprint_close:
 	remotePrintClose();
-net_close:
+lprint_close:
+	localPrintClose();
 	netDeinitialize();
 	return ret;
 }

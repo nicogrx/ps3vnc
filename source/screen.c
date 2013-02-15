@@ -1,9 +1,14 @@
 #include <SDL/SDL.h>
+#include <SDL/SDL_ttf.h>
 #include "screen.h"
 #include "remoteprint.h"
 
+#define FONT_FILE "/dev_hdd0/tmp/FreeSans.ttf"
+
 DisplayResolution res;
 static SDL_Surface *screen_surface = NULL;
+static TTF_Font *font;
+static SDL_Color text_color = { 255, 255, 255 };
 
 int initDisplay(int width, int height)
 {
@@ -22,11 +27,27 @@ int initDisplay(int width, int height)
   }
 	res.width = width;
 	res.height = height;
+
+	if (TTF_Init()) {
+		remotePrint("Unable to init TTF\n", TTF_GetError());
+		SDL_Quit();
+    return -1;
+	}
+
+	font = TTF_OpenFont(FONT_FILE, 24);
+	if (!font) {
+		remotePrint("TTF_OpenFont failed\n", TTF_GetError());
+		TTF_Quit();
+		SDL_Quit();
+		return -1;
+	}
+
 	return 0;
 }
 
 void closeDisplay()
 {
+	TTF_Quit();
 	if (screen_surface)
 	SDL_FreeSurface(screen_surface);
   SDL_Quit();
@@ -44,4 +65,17 @@ void blitFromDisplay(SDL_Surface *out_surface, SDL_Rect *src_rect, SDL_Rect *des
 void updateDisplay(void)
 {
 	SDL_Flip(screen_surface);
+}
+
+int blitText(const char *text, SDL_Rect *dest_rect)
+{
+	SDL_Surface *text_surface;
+	text_surface = TTF_RenderText_Solid(font, text, text_color);
+	if (!text_surface) {
+		remotePrint("TTF_RenderText_Solid failed\n", TTF_GetError());
+		return -1;
+	}
+	SDL_BlitSurface(text_surface, NULL, screen_surface, dest_rect);
+	SDL_Flip(screen_surface);
+	return 0;
 }

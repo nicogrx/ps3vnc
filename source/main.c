@@ -8,8 +8,8 @@
 
 #include "rfb.h"
 #include "vncauth.h"
-#include "rsxutil.h"
 #include "screen.h"
+#include "keymap.h"
 #include "tick.h"
 #include "remoteprint.h"
 #include "localprint.h"
@@ -28,15 +28,13 @@ struct vnc_client {
 	int frame_update_requested;
 	SDL_Surface *framebuffer;
 	SDL_Rect updated_rect;
+	PIXEL_FORMAT pixel_format;
+	unsigned int bits_pp;
+	unsigned int bytes_pp;
 	unsigned int rmask;
 	unsigned int gmask;
 	unsigned int bmask;
 	unsigned int amask;
-	unsigned int rshift;
-	unsigned int gshift;
-	unsigned int bshift;
-	unsigned int bits_pp;
-	unsigned int bytes_pp;
 };
 
 // functions prototypes
@@ -55,6 +53,7 @@ static int pointer_event(struct vnc_client *vncclient,
 static void reset_updated_region(struct vnc_client *);
 
 #define CONFIG_FILE "/dev_hdd0/tmp/vncconfig.txt"
+#define REMOTE_PRINT_SRV "192.168.1.2"
 /*
 static void	vibratePad(void)
 {
@@ -122,8 +121,11 @@ static int key_event(struct vnc_client *vncclient,
 	SDL_LockMutex(vncclient->lock);
 	RFB_KEY_EVENT * rke = (RFB_KEY_EVENT *)vncclient->output_msg;
 	rke->down_flag = downflag;
-	rke->key = key;
-	ret = rfbSendMsg(RFB_KeyEvent, rke);
+	rke->key = map_key(key, downflag);
+	remotePrint("key event: downflag=%u, code=%x, code sent=%x\n",
+		downflag, key, rke->key);
+	if (rke->key >= 0)
+		ret = rfbSendMsg(RFB_KeyEvent, rke);
 	SDL_UnlockMutex(vncclient->lock);
 	return ret;
 }
@@ -154,8 +156,6 @@ static int get_sdl_event(struct vnc_client *vncclient) {
 		case SDL_QUIT:
 			return 1;
 		case SDL_KEYDOWN:
-			if(event.key.keysym.sym == SDLK_q) 
-				return 1;
 			key_event(vncclient, 1, event.key.keysym.sym);
 			input_event = 1;
 			break;
@@ -171,6 +171,8 @@ static int get_sdl_event(struct vnc_client *vncclient) {
 			break;
 		case SDL_MOUSEBUTTONDOWN:
 			buttonmask |= get_button_mask(&event);
+			if (buttonmask == M_MIDDLE)
+				return 1; // QUIT VNC!
 			pointer_event(vncclient, buttonmask, x, y);
 			input_event = 1;
 			break;
@@ -201,7 +203,7 @@ int main(int argc, const char* argv[])
 	
 	localPrintInit();
 	
-	ret = remotePrintConnect("192.168.1.4");
+	ret = remotePrintConnect(REMOTE_PRINT_SRV);
 	if (ret<0)
 		goto lprint_close;
 
@@ -436,104 +438,101 @@ static int init(struct vnc_client * vncclient)
 		remotePrint("server name:%s\n",vncclient->rfb_info.server_name_string);
 	}
 
-	remotePrint("framebuffer_width:%i framebuffer_height:%i\n",
-		vncclient->rfb_info.server_init_msg.framebuffer_width,
-		vncclient->rfb_info.server_init_msg.framebuffer_height);
-	remotePrint("bits_per_pixel:%i depth:%i big_endian_flag:%i true_colour_flag:%i\n",
-		vncclient->rfb_info.server_init_msg.pixel_format.bits_per_pixel,
-		vncclient->rfb_info.server_init_msg.pixel_format.depth,
-		vncclient->rfb_info.server_init_msg.pixel_format.big_endian_flag,
-		vncclient->rfb_info.server_init_msg.pixel_format.true_colour_flag);
-	remotePrint("red_max:%i green_max:%i blue_max:%i\n",
-		vncclient->rfb_info.server_init_msg.pixel_format.red_max,
-		vncclient->rfb_info.server_init_msg.pixel_format.green_max,
-		vncclient->rfb_info.server_init_msg.pixel_format.blue_max);
-	remotePrint("red_shift:%i green_shift:%i blue_shift:%i\n",
-		vncclient->rfb_info.server_init_msg.pixel_format.red_shift,
-		vncclient->rfb_info.server_init_msg.pixel_format.green_shift,
-		vncclient->rfb_info.server_init_msg.pixel_format.blue_shift);
-
-
 	// check width & height
 	if (vncclient->rfb_info.server_init_msg.framebuffer_width>res.width ||
 			vncclient->rfb_info.server_init_msg.framebuffer_height>res.height)
 	{
-		remotePrint("cannot handle frame size: with=%i, height=%i\n",
+		remotePrint("cannot handle server frame size: with=%i, height=%i\n",
 			vncclient->rfb_info.server_init_msg.framebuffer_width,
 			vncclient->rfb_info.server_init_msg.framebuffer_height);
 		ret=-1;
 		goto end;
 	}
 
-	vncclient->bits_pp = vncclient->rfb_info.server_init_msg.pixel_format.bits_per_pixel;
-	vncclient->bytes_pp = vncclient->rfb_info.server_init_msg.pixel_format.bits_per_pixel / 8;
-
-	if (vncclient->rfb_info.server_init_msg.pixel_format.bits_per_pixel==32 &&
-			vncclient->rfb_info.server_init_msg.pixel_format.depth==24)
-	{
-		vncclient->rshift = 24 - vncclient->rfb_info.server_init_msg.pixel_format.red_shift;
-		vncclient->gshift = 24 - vncclient->rfb_info.server_init_msg.pixel_format.green_shift;
-		vncclient->bshift = 24 - vncclient->rfb_info.server_init_msg.pixel_format.blue_shift;
-
-    vncclient->rmask =
-			vncclient->rfb_info.server_init_msg.pixel_format.red_max << vncclient->rshift;
-		vncclient->gmask =
-			vncclient->rfb_info.server_init_msg.pixel_format.green_max << vncclient->gshift;
-		vncclient->bmask =
-			vncclient->rfb_info.server_init_msg.pixel_format.blue_max << vncclient->bshift;
-		vncclient->amask = 0x000000ff;
-
-		vncclient->framebuffer = SDL_CreateRGBSurface(SDL_SWSURFACE,
-			vncclient->rfb_info.server_init_msg.framebuffer_width,
-			vncclient->rfb_info.server_init_msg.framebuffer_height,
-			32, vncclient->rmask, vncclient->gmask, vncclient->bmask, vncclient->amask);
-		if (vncclient->framebuffer==NULL) {
-			remotePrint("could not create framebuffer:%s.\n", SDL_GetError());
-			ret = -1;
-			goto end;
-		} else {
-			remotePrint("Framebuffer created\n");
-		}
-		SDL_SetAlpha(vncclient->framebuffer,0,0);
-	}
-	else if (vncclient->rfb_info.server_init_msg.pixel_format.bits_per_pixel==16 &&
-			vncclient->rfb_info.server_init_msg.pixel_format.depth==16)
-	{
-    vncclient->rmask = 0xf800;
-    vncclient->gmask = 0x7e0;
-    vncclient->bmask = 0x1f;
-		vncclient->amask = 0;
-		vncclient->framebuffer = SDL_CreateRGBSurface(SDL_SWSURFACE,
-			vncclient->rfb_info.server_init_msg.framebuffer_width,
-			vncclient->rfb_info.server_init_msg.framebuffer_height,
-			16, vncclient->rmask, vncclient->gmask, vncclient->bmask, vncclient->amask);
-		if (vncclient->framebuffer==NULL) {
-			remotePrint("could not create framebuffer:%s.\n", SDL_GetError());
-			ret = -1;
-			goto end;
-		} else {
-			remotePrint("Framebuffer created\n");
-		}
-		SDL_SetAlpha(vncclient->framebuffer,0,0);
-	}
-	else
-	{
-		remotePrint("cannot handle bpp=%d, depth=%d\n",
+	remotePrint("server: framebuffer_width:%i framebuffer_height:%i\n",
+		vncclient->rfb_info.server_init_msg.framebuffer_width,
+		vncclient->rfb_info.server_init_msg.framebuffer_height);
+	remotePrint("server: bits_per_pixel:%i depth:%i big_endian_flag:%i true_colour_flag:%i\n",
 		vncclient->rfb_info.server_init_msg.pixel_format.bits_per_pixel,
-		vncclient->rfb_info.server_init_msg.pixel_format.depth);
-		ret=-1;
-		goto end;
+		vncclient->rfb_info.server_init_msg.pixel_format.depth,
+		vncclient->rfb_info.server_init_msg.pixel_format.big_endian_flag,
+		vncclient->rfb_info.server_init_msg.pixel_format.true_colour_flag);
+	remotePrint("server: red_max:%i green_max:%i blue_max:%i\n",
+		vncclient->rfb_info.server_init_msg.pixel_format.red_max,
+		vncclient->rfb_info.server_init_msg.pixel_format.green_max,
+		vncclient->rfb_info.server_init_msg.pixel_format.blue_max);
+	remotePrint("server: red_shift:%i green_shift:%i blue_shift:%i\n",
+		vncclient->rfb_info.server_init_msg.pixel_format.red_shift,
+		vncclient->rfb_info.server_init_msg.pixel_format.green_shift,
+		vncclient->rfb_info.server_init_msg.pixel_format.blue_shift);
 
-	}
+#if 1
+	vncclient->pixel_format.bits_per_pixel = 32;
+	vncclient->pixel_format.depth = 24;
+	vncclient->pixel_format.big_endian_flag = 1;
+	vncclient->pixel_format.true_colour_flag = 1;
+	vncclient->pixel_format.red_max = 0xff;
+	vncclient->pixel_format.green_max = 0xff;
+	vncclient->pixel_format.blue_max = 0xff;
+	vncclient->pixel_format.red_shift = 16;
+	vncclient->pixel_format.green_shift = 8;
+	vncclient->pixel_format.blue_shift = 0;
+#else
+	vncclient->pixel_format.bits_per_pixel = 16;
+	vncclient->pixel_format.depth = 16;
+	vncclient->pixel_format.big_endian_flag = 1;
+	vncclient->pixel_format.true_colour_flag = 1;
+	vncclient->pixel_format.red_max = 0x1f;
+	vncclient->pixel_format.green_max = 0x3f;
+	vncclient->pixel_format.blue_max = 0x1f;
+	vncclient->pixel_format.red_shift = 11;
+	vncclient->pixel_format.green_shift = 5;
+	vncclient->pixel_format.blue_shift = 0;
+#endif
 
-	// check colour mode
-	if (vncclient->rfb_info.server_init_msg.pixel_format.true_colour_flag!=1)
+	vncclient->bits_pp = vncclient->pixel_format.bits_per_pixel;
+	vncclient->bytes_pp = vncclient->pixel_format.bits_per_pixel / 8;
+
 	{
-		remotePrint("cannot handle colour map\n");
-		ret=-1;
-		goto end;
+		RFB_SET_PIXEL_FORMAT *rspf = (RFB_SET_PIXEL_FORMAT *)vncclient->output_msg;
+		rspf->pixel_format.bits_per_pixel = vncclient->pixel_format.bits_per_pixel;
+		rspf->pixel_format.depth = vncclient->pixel_format.depth;
+		rspf->pixel_format.big_endian_flag = vncclient->pixel_format.big_endian_flag;
+		rspf->pixel_format.true_colour_flag = vncclient->pixel_format.true_colour_flag;
+		rspf->pixel_format.red_max = vncclient->pixel_format.red_max;
+		rspf->pixel_format.green_max = vncclient->pixel_format.green_max;
+		rspf->pixel_format.blue_max = vncclient->pixel_format.blue_max;
+		rspf->pixel_format.red_shift = vncclient->pixel_format.red_shift;
+		rspf->pixel_format.green_shift = vncclient->pixel_format.green_shift;
+		rspf->pixel_format.blue_shift = vncclient->pixel_format.blue_shift;
+		ret = rfbSendMsg(RFB_SetPIxelFormat, rspf);
+		if (ret < 0) {
+			ret = -1;
+			goto end;
+		}		
 	}
+  vncclient->rmask =
+		vncclient->pixel_format.red_max >> vncclient->pixel_format.red_shift;
+	vncclient->gmask =
+		vncclient->pixel_format.green_max >> vncclient->pixel_format.green_shift;
+	vncclient->bmask =
+		vncclient->pixel_format.blue_max >> vncclient->pixel_format.blue_shift;
+	vncclient->amask = 0xff000000;
 
+	vncclient->framebuffer = SDL_CreateRGBSurface(SDL_SWSURFACE,
+		vncclient->rfb_info.server_init_msg.framebuffer_width,
+		vncclient->rfb_info.server_init_msg.framebuffer_height,
+		vncclient->pixel_format.bits_per_pixel,
+		vncclient->rmask, vncclient->gmask, vncclient->bmask, vncclient->amask);
+	if (vncclient->framebuffer==NULL) {
+		remotePrint("could not create framebuffer:%s.\n", SDL_GetError());
+		ret = -1;
+		goto end;
+	} else {
+		remotePrint("Framebuffer created\n");
+	}
+	SDL_SetAlpha(vncclient->framebuffer,0,0);
+	
 	// now send supported encodings formats
 	{
 		RFB_SET_ENCODINGS * rse = (RFB_SET_ENCODINGS *)vncclient->output_msg;

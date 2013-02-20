@@ -11,6 +11,8 @@
 #include "rfb.h"
 #include "remoteprint.h"
 
+#define TCP_NODELAY 1
+
 static int rfb_sock;
 static SDL_mutex *rfb_mutex;
 
@@ -19,6 +21,7 @@ int rfbConnect(const char * ip, int port)
 	int ret;
 	int x;
 	struct sockaddr_in server;
+	int val = 1;
 
 	rfb_mutex=SDL_CreateMutex();
 	rfb_sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -28,8 +31,11 @@ int rfbConnect(const char * ip, int port)
 	}
 
   x=fcntl(rfb_sock,F_GETFL,0);
-  fcntl(rfb_sock,F_SETFL,x | O_NONBLOCK);
-	
+  fcntl(rfb_sock, F_SETFL, x | O_NONBLOCK);
+
+	if(setsockopt(rfb_sock, IPPROTO_TCP, TCP_NODELAY, &val, sizeof(val)) < 0)
+    remotePrint("unable to turn on TCP_NODELAY\n");
+
 	memset(&server, 0, sizeof(server));
 	server.sin_len = sizeof(server);
 	server.sin_family = AF_INET;

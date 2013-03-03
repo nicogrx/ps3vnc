@@ -1,6 +1,7 @@
 #include "keymap.h"
 
 #define XK_MISCELLANY
+#define XK_XKB_KEYS
 #define XK_LATIN1
 #include "keysymdef.h"
 
@@ -19,6 +20,42 @@ int map_key(int key, unsigned char downflag)
 		break;
 	case 0xd:
 		out_key = XK_Return;
+		break;
+	case 0x4000003a:
+		out_key = XK_F1;
+		break;
+	case 0x4000003b:
+		out_key = XK_F2;
+		break;
+	case 0x4000003c:
+		out_key = XK_F3;
+		break;
+	case 0x4000003d:
+		out_key = XK_F4;
+		break;
+	case 0x4000003e:
+		out_key = XK_F5;
+		break;
+	case 0x4000003f:
+		out_key = XK_F6;
+		break;
+	case 0x40000040:
+		out_key = XK_F7;
+		break;
+	case 0x40000041:
+		out_key = XK_F8;
+		break;
+	case 0x40000042:
+		out_key = XK_F9;
+		break;
+	case 0x40000043:
+		out_key = XK_F10;
+		break;
+	case 0x40000044:
+		out_key = XK_F11;
+		break;
+	case 0x40000045:
+		out_key = XK_F12;
 		break;
 	case 0x400000e1:
 		if (downflag)
@@ -60,8 +97,14 @@ int map_key(int key, unsigned char downflag)
 	case 0x40000051:
 		out_key = XK_Down;
 		break;
+	case 0x4000004a:
+		out_key = XK_Home;
+		break;
 	case 0x4000004b:
 		out_key = XK_Page_Up;
+		break;
+	case 0x4000004d:
+		out_key = XK_End;
 		break;
 	case 0x4000004e:
 		out_key = XK_Page_Down;
@@ -163,6 +206,55 @@ int map_key(int key, unsigned char downflag)
 		else
 			out_key = key;
 		break;
+	case XK_comma:
+		if (shifted)
+			out_key = XK_question;
+		else
+			out_key = key;
+		break;
+	case XK_semicolon:
+		if (shifted)
+			out_key = XK_period;
+		else
+			out_key = key;
+		break;
+	case XK_colon:
+		if (shifted)
+			out_key = XK_slash;
+		else
+			out_key = key;
+		break;
+	case XK_exclam:
+		if (shifted)
+			out_key = XK_section;
+		else
+			out_key = key;
+		break;
+	case XK_ugrave:
+		if (shifted)
+			out_key = XK_percent;
+		else
+			out_key = key;
+		break;
+	case XK_asterisk:
+		if (shifted)
+			out_key = XK_mu;
+		else
+			out_key = key;
+		break;
+	case XK_dead_circumflex:
+		if (shifted)
+			out_key = XK_dead_diaeresis;
+		else
+			out_key = key;
+		break;
+	case XK_dollar:
+		if (shifted)
+			out_key = XK_sterling;
+		else
+			out_key = key;
+		break;
+
 	default:
 		if (key >= 0x61 && key <= 0x7a) {
 			if (shifted)

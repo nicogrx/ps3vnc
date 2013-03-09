@@ -200,9 +200,9 @@ int main(int argc, const char* argv[])
 	ret = netInitialize();
 	if (ret < 0)
 		return ret;
-	
+
 	localPrintInit();
-	
+
 	ret = remotePrintConnect(REMOTE_PRINT_SRV);
 	if (ret<0)
 		goto lprint_close;
@@ -469,14 +469,23 @@ static int init(struct vnc_client * vncclient)
 #if 1
 	vncclient->pixel_format.bits_per_pixel = 32;
 	vncclient->pixel_format.depth = 24;
-	vncclient->pixel_format.big_endian_flag = 1;
+	vncclient->pixel_format.big_endian_flag = 0;
 	vncclient->pixel_format.true_colour_flag = 1;
 	vncclient->pixel_format.red_max = 0xff;
 	vncclient->pixel_format.green_max = 0xff;
 	vncclient->pixel_format.blue_max = 0xff;
-	vncclient->pixel_format.red_shift = 16;
+	vncclient->pixel_format.red_shift = 0;
 	vncclient->pixel_format.green_shift = 8;
-	vncclient->pixel_format.blue_shift = 0;
+	vncclient->pixel_format.blue_shift = 16;
+
+  vncclient->rmask =
+		vncclient->pixel_format.red_max << 24;
+	vncclient->gmask =
+		vncclient->pixel_format.green_max << 16;
+	vncclient->bmask =
+		vncclient->pixel_format.blue_max << 8;
+	vncclient->amask = 0x000000ff;
+
 #else
 	vncclient->pixel_format.bits_per_pixel = 16;
 	vncclient->pixel_format.depth = 16;
@@ -488,6 +497,15 @@ static int init(struct vnc_client * vncclient)
 	vncclient->pixel_format.red_shift = 11;
 	vncclient->pixel_format.green_shift = 5;
 	vncclient->pixel_format.blue_shift = 0;
+
+	vncclient->rmask =
+		vncclient->pixel_format.red_max << 11;
+	vncclient->gmask =
+		vncclient->pixel_format.green_max << 5;
+	vncclient->bmask =
+		vncclient->pixel_format.blue_max << 0;
+	vncclient->amask = 0x0;
+
 #endif
 
 	vncclient->bits_pp = vncclient->pixel_format.bits_per_pixel;
@@ -511,13 +529,6 @@ static int init(struct vnc_client * vncclient)
 			goto end;
 		}		
 	}
-  vncclient->rmask =
-		vncclient->pixel_format.red_max >> vncclient->pixel_format.red_shift;
-	vncclient->gmask =
-		vncclient->pixel_format.green_max >> vncclient->pixel_format.green_shift;
-	vncclient->bmask =
-		vncclient->pixel_format.blue_max >> vncclient->pixel_format.blue_shift;
-	vncclient->amask = 0xff000000;
 
 	vncclient->framebuffer = SDL_CreateRGBSurface(SDL_SWSURFACE,
 		vncclient->rfb_info.server_init_msg.framebuffer_width,
@@ -536,9 +547,9 @@ static int init(struct vnc_client * vncclient)
 	// now send supported encodings formats
 	{
 		RFB_SET_ENCODINGS * rse = (RFB_SET_ENCODINGS *)vncclient->output_msg;
-#if 0
+#if 1
 		rse->number_of_encodings = 4;
-		int encoding_type[4] = { RFB_RRE, RFB_Hextile, RFB_CopyRect, RFB_Raw };
+		int encoding_type[4] = { RFB_RRE, RFB_CopyRect, RFB_Hextile, RFB_Raw };
 #else
 		rse->number_of_encodings = 4;
 		int encoding_type[4] = { RFB_Hextile, RFB_RRE, RFB_CopyRect, RFB_Raw };
@@ -885,7 +896,7 @@ static int handleHextileRectangles(struct vnc_client * vncclient, SDL_Rect *rect
 				scratchbuffer = SDL_CreateRGBSurface(SDL_SWSURFACE, tile_rect.w, tile_rect.h,
 					vncclient->bits_pp, vncclient->rmask, vncclient->gmask, vncclient->bmask, vncclient->amask);
         if (scratchbuffer)
-         SDL_SetAlpha(scratchbuffer,0,0);
+					SDL_SetAlpha(scratchbuffer,0,0);
         else {
 					remotePrint("raw tile [%i,%i]: failed to create scratchbuffer.\n", r, c);
 					ret = -1;

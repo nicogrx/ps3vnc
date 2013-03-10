@@ -13,6 +13,7 @@
 #include "tick.h"
 #include "remoteprint.h"
 #include "localprint.h"
+#include "osk_input.h"
 
 #define MAX_CHARS 128
 struct vnc_client {
@@ -188,10 +189,42 @@ static int get_sdl_event(struct vnc_client *vncclient) {
 	return ret;
 }
 
+static int getConnectionInfos(const char * config_file, struct vnc_client *vncclient)
+{
+	int ret = 0;
+	char server_ip[MAX_CHARS];
+	char password[MAX_CHARS];
+
+	if (!vncclient)
+		return -1;
+
+	memset(server_ip, 0, MAX_CHARS);
+	memset(vncclient->server_ip, 0, MAX_CHARS);
+	memset(password, 0, MAX_CHARS);
+	memset(vncclient->password, 0, MAX_CHARS);
+
+	FILE * pf;
+	pf=NULL;
+	pf = fopen(config_file, "r");
+
+	if (pf==NULL)
+		remotePrint("failed to open %s\n", config_file);
+	else {
+		fscanf(pf, "%s\n", vncclient->server_ip);
+		fscanf(pf, "%s\n", vncclient->password);
+		fclose(pf);
+		remotePrint("%s: server ip address = %s\n", config_file, vncclient->server_ip);
+		remotePrint("%s: password = %s\n", config_file, vncclient->password);
+	}
+
+	//ret = Get_OSK_String("enter server address:", server_ip, MAX_CHARS-1);
+	//ret = -1;
+	return ret;
+}
+
 int main(int argc, const char* argv[])
 {
 	int port, ret=0;
-	FILE * pf;
 	struct vnc_client vncclient;
 
 	vncclient.vnc_end=0;
@@ -209,6 +242,10 @@ int main(int argc, const char* argv[])
 
 	ret = initDisplay(1920, 1080);
 	if (ret)
+		goto display_close;
+	
+	ret = getConnectionInfos(CONFIG_FILE, &vncclient);
+	if (ret < 0)
 		goto rprint_close;
 
 	reset_updated_region(&vncclient);
@@ -216,29 +253,7 @@ int main(int argc, const char* argv[])
 	vncclient.lock=SDL_CreateMutex();
 	if(!vncclient.lock)
 		goto display_close;
-	
-	memset(vncclient.server_ip, 0, MAX_CHARS);
-	memset(vncclient.password, 0, MAX_CHARS);
-
-	remotePrint("Read configuration file: %s\n", CONFIG_FILE);
-	pf=NULL;
-	pf = fopen(CONFIG_FILE, "r");
-
-	if (pf==NULL)
-	{
-		remotePrint("failed to open configuration file\n");
-		vncclient.vnc_end=1;
-		sleep(2);
-		goto mutex_destroy;
-	}
-
-	fscanf(pf, "%s\n", vncclient.server_ip);
-	fscanf(pf, "%s\n", vncclient.password);
-	fclose(pf);
-	remotePrint("server ip address = %s\n", vncclient.server_ip);
-	remotePrint("password = %s\n", vncclient.password);
-	remotePrint("connecting to %s\n", vncclient.server_ip);
-
+	 
 	for(port=5900;port<5930;port++)
 	{
 		ret = rfbConnect(vncclient.server_ip, port);

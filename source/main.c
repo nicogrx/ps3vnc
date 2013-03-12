@@ -2,7 +2,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <net/net.h>
-
+#include <io/pad.h>
 #include <SDL/SDL.h>
 #include <SDL/SDL_thread.h>
 
@@ -14,6 +14,7 @@
 #include "remoteprint.h"
 #include "localprint.h"
 #include "osk_input.h"
+#include "dialog.h"
 
 #define MAX_CHARS 128
 struct vnc_client {
@@ -152,7 +153,7 @@ static int get_sdl_event(struct vnc_client *vncclient) {
 	static unsigned short y = 0;
 	static unsigned char buttonmask = 0;
 
-  while(SDL_PollEvent(&event)) {
+	while(SDL_PollEvent(&event)) {
 		switch(event.type) {
 		case SDL_QUIT:
 			return 1;
@@ -160,7 +161,7 @@ static int get_sdl_event(struct vnc_client *vncclient) {
 			key_event(vncclient, 1, event.key.keysym.sym);
 			input_event = 1;
 			break;
-    case SDL_KEYUP:
+		case SDL_KEYUP:
 			key_event(vncclient, 0, event.key.keysym.sym);
 			input_event = 1;
 			break;
@@ -192,15 +193,13 @@ static int get_sdl_event(struct vnc_client *vncclient) {
 static int getConnectionInfos(const char * config_file, struct vnc_client *vncclient)
 {
 	int ret = 0;
-	char server_ip[MAX_CHARS];
-	char password[MAX_CHARS];
+	char text[MAX_CHARS*2];
+	SDL_Rect text_rect;
 
 	if (!vncclient)
 		return -1;
 
-	memset(server_ip, 0, MAX_CHARS);
 	memset(vncclient->server_ip, 0, MAX_CHARS);
-	memset(password, 0, MAX_CHARS);
 	memset(vncclient->password, 0, MAX_CHARS);
 
 	FILE * pf;
@@ -208,17 +207,51 @@ static int getConnectionInfos(const char * config_file, struct vnc_client *vnccl
 	pf = fopen(config_file, "r");
 
 	if (pf==NULL)
-		remotePrint("failed to open %s\n", config_file);
+		remotePrint("failed to read %s\n", config_file);
 	else {
 		fscanf(pf, "%s\n", vncclient->server_ip);
 		fscanf(pf, "%s\n", vncclient->password);
 		fclose(pf);
-		remotePrint("%s: server ip address = %s\n", config_file, vncclient->server_ip);
-		remotePrint("%s: password = %s\n", config_file, vncclient->password);
+		memset(text, 0, MAX_CHARS*2);
+		sprintf(text, "server ip address: %s\npassword: %s",
+			vncclient->server_ip, vncclient->password);
+		if(yes_dialog(text))
+			return 0;
 	}
 
-	//ret = Get_OSK_String("enter server address:", server_ip, MAX_CHARS-1);
-	//ret = -1;
+	text_rect.x = 100;
+	text_rect.y = 100;
+	text_rect.w = 400;
+	text_rect.h = 60;
+
+	ret =  blitText("please, enter server ip address:", &text_rect);
+	if (ret < 0)
+		return ret;
+
+	ret = Get_OSK_String(vncclient->server_ip, MAX_CHARS-1);
+	if (ret < 0)
+		return ret;
+
+	remotePrint("getConnectionInfos: server ip address: %s\n", vncclient->server_ip);
+	
+	ret =  blitText("please, enter vnc password:", &text_rect);
+	if (ret < 0)
+		return ret;
+	
+	ret = Get_OSK_String(vncclient->password, MAX_CHARS-1);
+	if (ret < 0)
+		return ret;
+
+	remotePrint("getConnectionInfos: password: %s\n", vncclient->password);
+
+	pf = fopen(config_file, "w");
+	if (pf==NULL)
+		remotePrint("failed to write %s\n", config_file);
+	else {
+		fprintf(pf, "%s\n", vncclient->server_ip);
+		fprintf(pf, "%s\n", vncclient->password);
+		fclose(pf);
+	}
 	return ret;
 }
 
@@ -226,14 +259,16 @@ int main(int argc, const char* argv[])
 {
 	int port, ret=0;
 	struct vnc_client vncclient;
-
 	vncclient.vnc_end=0;
+
+	ioPadInit(7);
 	startTicks();
 
 	ret = netInitialize();
 	if (ret < 0)
 		return ret;
 
+	
 	localPrintInit();
 
 	ret = remotePrintConnect(REMOTE_PRINT_SRV);
@@ -321,6 +356,7 @@ rprint_close:
 lprint_close:
 	localPrintClose();
 	netDeinitialize();
+	ioPadEnd();
 	return ret;
 }
 

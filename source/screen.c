@@ -70,11 +70,13 @@ void updateDisplay(void)
 int blitText(const char *text, SDL_Rect *dest_rect)
 {
 	SDL_Surface *text_surface;
+
 	text_surface = TTF_RenderText_Solid(font, text, text_color);
 	if (!text_surface) {
 		remotePrint("TTF_RenderText_Solid failed\n", TTF_GetError());
 		return -1;
 	}
+	SDL_FillRect(screen_surface, dest_rect, 0);
 	SDL_BlitSurface(text_surface, NULL, screen_surface, dest_rect);
 	SDL_Flip(screen_surface);
 	return 0;

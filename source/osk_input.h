@@ -1,1 +1,1 @@
-int Get_OSK_String(char *caption, char *str, int len);
+int Get_OSK_String(char *str, int len);

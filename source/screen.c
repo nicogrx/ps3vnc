@@ -3,7 +3,7 @@
 #include "screen.h"
 #include "remoteprint.h"
 
-#define FONT_FILE "/dev_hdd0/tmp/FreeSans.ttf"
+#define FONT_FILE "/dev_hdd0/game/VNC0VIEWE/FreeSans.ttf"
 
 DisplayResolution res;
 static SDL_Surface *screen_surface = NULL;
@@ -13,25 +13,24 @@ static SDL_Color text_color = { 255, 255, 255 };
 int initDisplay(int width, int height)
 {
 	if(SDL_Init(SDL_INIT_VIDEO) < 0) 
-  {
+	 {
 		remotePrint( "Unable to init SDL: %s\n", SDL_GetError() );
-    return -1;
-  }
-	atexit( SDL_Quit );
+		return -1;
+	}
 	screen_surface = SDL_SetVideoMode(width, height, 32,
 		SDL_HWSURFACE | SDL_DOUBLEBUF);
-  if(screen_surface == NULL)
-  {
+	if(screen_surface == NULL)
+	{
 		remotePrint("Unable to set video mode: %s\n", SDL_GetError());
-    return -1;
-  }
+		return -1;
+	}
 	res.width = width;
 	res.height = height;
 
 	if (TTF_Init()) {
 		remotePrint("Unable to init TTF\n", TTF_GetError());
 		SDL_Quit();
-    return -1;
+	return -1;
 	}
 
 	font = TTF_OpenFont(FONT_FILE, 24);
@@ -50,12 +49,12 @@ void closeDisplay()
 	TTF_Quit();
 	if (screen_surface)
 	SDL_FreeSurface(screen_surface);
-  SDL_Quit();
+	SDL_Quit();
 }
 
 void fillDisplay(SDL_Surface *in_surface, SDL_Rect *updated_rect)
 {
-  SDL_BlitSurface(in_surface, updated_rect, screen_surface, updated_rect);
+	SDL_BlitSurface(in_surface, updated_rect, screen_surface, updated_rect);
 	SDL_UpdateRects(screen_surface, 1, updated_rect);
 }
 void blitFromDisplay(SDL_Surface *out_surface, SDL_Rect *src_rect, SDL_Rect *dest_rect)

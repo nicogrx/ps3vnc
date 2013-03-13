@@ -145,13 +145,18 @@ static int pointer_event(struct vnc_client *vncclient,
 	SDL_UnlockMutex(vncclient->lock);
 	return ret;
 }
-static int get_sdl_event(struct vnc_client *vncclient) {
+static int get_input_event(struct vnc_client *vncclient) {
 	SDL_Event event;
+	padInfo padinfo;
+	padData paddata;
 	int ret = 0;
-	int input_event = 0;
+	int i;
+	int mouse_event = 0;
+	int pad_event = 0;
 	static unsigned short x = 0;
 	static unsigned short y = 0;
-	static unsigned char buttonmask = 0;
+	static unsigned char mouse_buttonmask = 0;
+	static unsigned char pad_buttonmask = 0;
 
 	while(SDL_PollEvent(&event)) {
 		switch(event.type) {
@@ -159,33 +164,115 @@ static int get_sdl_event(struct vnc_client *vncclient) {
 			return 1;
 		case SDL_KEYDOWN:
 			key_event(vncclient, 1, event.key.keysym.sym);
-			input_event = 1;
+			mouse_event = 1;
 			break;
 		case SDL_KEYUP:
 			key_event(vncclient, 0, event.key.keysym.sym);
-			input_event = 1;
+			mouse_event = 1;
 			break;
 		case SDL_MOUSEMOTION:
 			x = event.motion.x;
 			y = event.motion.y;
-			pointer_event(vncclient, buttonmask, x, y);
-			input_event = 1;
+			pointer_event(vncclient, mouse_buttonmask, x, y);
+			mouse_event = 1;
 			break;
 		case SDL_MOUSEBUTTONDOWN:
-			buttonmask |= get_button_mask(&event);
-			if (buttonmask == M_MIDDLE)
-				return 1; // QUIT VNC!
-			pointer_event(vncclient, buttonmask, x, y);
-			input_event = 1;
+			mouse_buttonmask |= get_button_mask(&event);
+			pointer_event(vncclient, mouse_buttonmask, x, y);
+			mouse_event = 1;
 			break;
 		case SDL_MOUSEBUTTONUP:
-			buttonmask &= ~get_button_mask(&event);
-			pointer_event(vncclient, buttonmask, x, y);
-			input_event = 1;
+			mouse_buttonmask &= ~get_button_mask(&event);
+			pointer_event(vncclient, mouse_buttonmask, x, y);
+			mouse_event = 1;
 			break;
 		}
-  }
-	if (input_event)
+	}
+	ioPadGetInfo(&padinfo);
+	for(i=0; i<MAX_PADS; i++)
+	{
+		if(padinfo.status[i])
+		{
+			ioPadGetData(i, &paddata);
+			if (paddata.BTN_SQUARE)
+				return 1;
+
+			if (paddata.BTN_CROSS)
+			{
+				pad_event = 1;
+				pad_buttonmask |= M_LEFT;
+			}
+			else if (pad_buttonmask & M_LEFT)
+			{
+				pad_event = 1;
+				pad_buttonmask &= ~M_LEFT;
+			}
+			if (paddata.BTN_CIRCLE)
+			{
+				pad_event = 1;
+				pad_buttonmask |= M_RIGHT;
+			}
+			else if (pad_buttonmask & M_RIGHT)
+			{
+				pad_event = 1;
+				pad_buttonmask &= ~M_RIGHT;
+			}
+			if (paddata.BTN_R1)
+			{
+				pad_event = 1;
+				pad_buttonmask |= M_WHEEL_DOWN;
+			}
+			else if (pad_buttonmask & M_WHEEL_DOWN)
+			{
+				pad_event = 1;
+				pad_buttonmask &= ~M_WHEEL_DOWN;
+			}
+
+			if (paddata.BTN_L1)
+			{
+				pad_event = 1;
+				pad_buttonmask |= M_WHEEL_UP;
+			}
+			else if (pad_buttonmask & M_WHEEL_UP)
+			{
+				pad_event = 1;
+				pad_buttonmask &= ~M_WHEEL_UP;
+			}
+
+			if (paddata.BTN_LEFT)
+			{
+				pad_event = 1;
+				if (x > 0)
+					x-=5;
+			}
+		
+			if (paddata.BTN_RIGHT)
+			{
+				pad_event = 1;
+				if (x < res.width)
+					x+=5;
+			}
+		
+			if (paddata.BTN_UP)
+			{
+				pad_event = 1;
+				if (y > 0)
+					y-=5;
+			}
+		
+			if (paddata.BTN_DOWN)
+			{
+				pad_event = 1;
+				if (y < res.height)
+					y+=5;
+			}
+			if (pad_event) {
+				pointer_event(vncclient, pad_buttonmask, x, y);
+			}
+		}
+		break;
+	}
+	if (mouse_event || pad_event)
 		ret = request_framebuffer_update(vncclient);
 	return ret;
 }
@@ -330,7 +417,7 @@ int main(int argc, const char* argv[])
 	vncclient.msg_thread = SDL_CreateThread(handleMsgs, (void*)&vncclient); 
 	vncclient.req_thread = SDL_CreateThread(requestUpdate, (void*)&vncclient); 
 	while(!vncclient.vnc_end) {
-			vncclient.vnc_end = get_sdl_event(&vncclient);
+			vncclient.vnc_end = get_input_event(&vncclient);
 			usleep(50000);
     }
 

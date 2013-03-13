@@ -80,7 +80,7 @@ static void my_eventHandle(u64 status, u64 param, void * userdata) {
 	remotePrint("my_eventHandle: status:%x\n", status);
 	sys_event = status;
 }
-
+/*
 static void OSK_exit(void)
 {
 	remotePrint("OSK_exit\n");
@@ -94,7 +94,7 @@ static void OSK_exit(void)
 	}
 	osk_end = 1;
 }
-
+*/
 int Get_OSK_String(char *str, int len)
 {
 	int ret = 0;
@@ -106,7 +106,6 @@ int Get_OSK_String(char *str, int len)
 	
 	osk_end = 0;
 	osk_level = 0;
-	atexit(OSK_exit);
 
 	if(sysMemContainerCreate(&container_mem, 8*1024*1024)<0)
 		return -1;

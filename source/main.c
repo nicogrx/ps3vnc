@@ -16,6 +16,8 @@
 #include "osk_input.h"
 #include "dialog.h"
 
+char pad_text[80];
+
 #define MAX_CHARS 128
 struct vnc_client {
 	RFB_INFO rfb_info;
@@ -239,33 +241,55 @@ static int get_input_event(struct vnc_client *vncclient) {
 				pad_buttonmask &= ~M_WHEEL_UP;
 			}
 
-			if (paddata.BTN_LEFT)
+			if (paddata.BTN_LEFT && (x - 5 > 0))
 			{
 				pad_event = 1;
-				if (x > 0)
-					x-=5;
+				x-=5;
 			}
 		
-			if (paddata.BTN_RIGHT)
+			if (paddata.BTN_RIGHT && (x + 5 < res.width))
 			{
 				pad_event = 1;
-				if (x < res.width)
-					x+=5;
+				x+=5;
 			}
 		
-			if (paddata.BTN_UP)
+			if (paddata.BTN_UP && (y - 5 > 0))
 			{
 				pad_event = 1;
-				if (y > 0)
-					y-=5;
+				y-=5;
 			}
 		
-			if (paddata.BTN_DOWN)
+			if (paddata.BTN_DOWN && (y + 5 < res.height))
 			{
 				pad_event = 1;
-				if (y < res.height)
-					y+=5;
+				y+=5;
 			}
+
+			if (paddata.ANA_L_H < 119 && (x - (127 - paddata.ANA_L_H) > 0))
+			{
+				pad_event = 1;
+				x -= 127 - paddata.ANA_L_H;
+			}
+
+			if ( paddata.ANA_L_H > 135 && (x + (paddata.ANA_L_H - 127) < res.width))
+			{
+				pad_event = 1;
+				x += paddata.ANA_L_H - 127;
+
+			}
+
+			if (paddata.ANA_L_V < 119 && (y - (127 - paddata.ANA_L_V) > 0))
+			{
+				pad_event = 1;
+				y -= 127 - paddata.ANA_L_V;
+			}
+
+			if (paddata.ANA_L_V > 135 && (y + (paddata.ANA_L_V - 127) < res.height))
+			{
+				pad_event = 1;
+				y += paddata.ANA_L_V - 127;
+			}
+
 			if (pad_event) {
 				pointer_event(vncclient, pad_buttonmask, x, y);
 			}
@@ -762,6 +786,7 @@ static int handleMsgs(void * data)
 					remotePrint("draw updated rectangle to screen\n");
 					fillDisplay(vncclient->framebuffer, &vncclient->updated_rect);
 					updateDisplay();
+
 					reset_updated_region(vncclient);
 					vncclient->frame_update_requested = 0;
 					SDL_UnlockMutex(vncclient->lock);

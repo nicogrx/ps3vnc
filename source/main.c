@@ -276,12 +276,27 @@ static int get_input_event(struct vnc_client *vncclient) {
 		ret = request_framebuffer_update(vncclient);
 	return ret;
 }
+static void displayUsage(void)
+{
+	SDL_Rect tmp_rect;
+	tmp_rect.x = 0;
+	tmp_rect.y = 0;
+	tmp_rect.w = res.width;
+	tmp_rect.h = res.height;
+	clearDisplay(&tmp_rect);
+	ok_dialog("PS3 Vnc viewer v1.0 by nicogrx@gmail.com.\nTHIS SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND.\n\nWhen connected to server, use SQUARE pad button to quit.\nPlug a USB mouse & keyboard for a better experience.", 1);
+	tmp_rect.x = 0;
+	tmp_rect.y = 0;
+	tmp_rect.w = res.width;
+	tmp_rect.h = res.height;
+	clearDisplay(&tmp_rect);
+}
 
 static int getConnectionInfos(const char * config_file, struct vnc_client *vncclient)
 {
 	int ret = 0;
 	char text[MAX_CHARS*2];
-	SDL_Rect text_rect;
+	SDL_Rect tmp_rect;
 
 	if (!vncclient)
 		return -1;
@@ -302,16 +317,18 @@ static int getConnectionInfos(const char * config_file, struct vnc_client *vnccl
 		memset(text, 0, MAX_CHARS*2);
 		sprintf(text, "server ip address: %s\npassword: %s",
 			vncclient->server_ip, vncclient->password);
-		if(yes_dialog(text))
+		if(yes_dialog(text)) {
+			displayUsage();
 			return 0;
+		}
 	}
 
-	text_rect.x = 100;
-	text_rect.y = 100;
-	text_rect.w = 400;
-	text_rect.h = 60;
+	tmp_rect.x = 100;
+	tmp_rect.y = 100;
+	tmp_rect.w = 400;
+	tmp_rect.h = 60;
 
-	ret =  blitText("please, enter server ip address:", &text_rect);
+	ret =  blitText("please, enter server ip address:", &tmp_rect);
 	if (ret < 0)
 		return ret;
 
@@ -321,7 +338,7 @@ static int getConnectionInfos(const char * config_file, struct vnc_client *vnccl
 
 	remotePrint("getConnectionInfos: server ip address: %s\n", vncclient->server_ip);
 	
-	ret =  blitText("please, enter vnc password:", &text_rect);
+	ret =  blitText("please, enter vnc password:", &tmp_rect);
 	if (ret < 0)
 		return ret;
 	
@@ -339,6 +356,7 @@ static int getConnectionInfos(const char * config_file, struct vnc_client *vnccl
 		fprintf(pf, "%s\n", vncclient->password);
 		fclose(pf);
 	}
+	displayUsage();
 	return ret;
 }
 

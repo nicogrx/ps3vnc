@@ -65,6 +65,11 @@ void updateDisplay(void)
 {
 	SDL_Flip(screen_surface);
 }
+void clearDisplay(SDL_Rect *dest_rect)
+{
+	SDL_FillRect(screen_surface, dest_rect, 0);
+	SDL_Flip(screen_surface);
+}
 
 int blitText(const char *text, SDL_Rect *dest_rect)
 {
